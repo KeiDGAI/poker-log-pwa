@@ -12,6 +12,7 @@ type QuickAction = {
   id: string;
   position: string;
   action: string;
+  size?: string;
   street: Street;
   order: number;
   createdAt: string;
@@ -26,8 +27,12 @@ type HandNote = {
   exactHeroHand?: string;
   board: {
     flop: string;
+    flopSuits?: string;
     turn: string;
+    turnSuit?: string;
     river: string;
+    riverSuit?: string;
+    tags?: string[];
   };
   actions: Record<Street, QuickAction[]>;
   result: Result;
@@ -57,6 +62,8 @@ const streets: Street[] = ["preflop", "flop", "turn", "river"];
 const streetLabels: Record<Street, string> = { preflop: "PF", flop: "Flop", turn: "Turn", river: "River" };
 const preflopActions = ["Fold", "Limp", "Open", "Call", "3bet", "4bet", "All-in"];
 const postflopActions = ["Check", "Bet", "Call", "Raise", "All-in", "Fold"];
+const betSizes = ["33%", "50%", "75%", "100%", "120%", "More"];
+const boardTags = ["Wet", "Dry", "Two-tone", "Monotone", "Rainbow", "Paired", "Connected", "Flush draw"];
 const quickHands = ["AA", "KK", "QQ", "JJ", "TT", "AKs", "AKo", "AQs", "AQo", "AJs", "KQs", "QJs", "JTs", "T9s", "A5s"];
 const ranks = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"];
 const boardTargets = ["flop", "turn", "river"] as const;
@@ -95,7 +102,7 @@ function newHand(): HandNote {
     heroPosition: "",
     heroHand: "",
     exactHeroHand: "",
-    board: { flop: "", turn: "", river: "" },
+    board: { flop: "", flopSuits: "", turn: "", turnSuit: "", river: "", riverSuit: "", tags: [] },
     actions: blankActions(),
     result: "",
     amountMemo: "",
@@ -128,7 +135,20 @@ function formatDate(value: string) {
 }
 
 function actionsText(actions: QuickAction[]) {
-  return actions.map((item) => `${item.position} ${item.action}`).join(" / ");
+  return actions.map((item) => `${item.position} ${item.action}${item.size ? ` ${item.size}` : ""}`).join(" / ");
+}
+
+function formatBoardCards(ranks = "", suits = "") {
+  if (!ranks) return "";
+  const cards = ranks.split("").map((rank, index) => `${rank}${suits[index] || ""}`);
+  const incomplete = suits && suits.length !== ranks.length ? " (suit incomplete)" : "";
+  return `${cards.join(suits ? " " : "")}${incomplete}`;
+}
+
+function formatBoard(hand: HandNote, street: BoardTarget) {
+  if (street === "flop") return formatBoardCards(hand.board.flop, hand.board.flopSuits || "");
+  if (street === "turn") return formatBoardCards(hand.board.turn, hand.board.turnSuit || "");
+  return formatBoardCards(hand.board.river, hand.board.riverSuit || "");
 }
 
 export function buildExportText(session: PokerSession, mode: "all" | "summary" | "hands" = "all") {
@@ -156,9 +176,10 @@ export function buildExportText(session: PokerSession, mode: "all" | "summary" |
       `${index + 1})`,
       `Hero: ${hand.heroPosition || "-"} / ${hand.heroHand || "-"}${hand.exactHeroHand ? ` (${hand.exactHeroHand})` : ""}`,
       `PF: ${actionsText(hand.actions.preflop)}`,
-      `Flop: ${hand.board.flop}${hand.board.flop ? " / " : ""}${actionsText(hand.actions.flop)}`,
-      `Turn: ${hand.board.turn}${hand.board.turn ? " / " : ""}${actionsText(hand.actions.turn)}`,
-      `River: ${hand.board.river}${hand.board.river ? " / " : ""}${actionsText(hand.actions.river)}`,
+      `Flop: ${formatBoard(hand, "flop")}${hand.board.flop ? " / " : ""}${actionsText(hand.actions.flop)}`,
+      `Turn: ${formatBoard(hand, "turn")}${hand.board.turn ? " / " : ""}${actionsText(hand.actions.turn)}`,
+      `River: ${formatBoard(hand, "river")}${hand.board.river ? " / " : ""}${actionsText(hand.actions.river)}`,
+      `Board Tags: ${(hand.board.tags || []).join(" / ")}`,
       `Result: ${hand.result}`,
       `Amount: ${hand.amountMemo}`,
       `Memo: ${hand.handMemo}`,
@@ -402,7 +423,7 @@ function SessionDetail({ session, onBack, onChange, onLive, onExport, onDelete, 
                     <p className="text-sm font-bold text-emerald-300">{hand.result || "-"}</p>
                   </div>
                   <p className="mt-1 truncate text-sm text-slate-300">PF: {actionsText(hand.actions.preflop)}</p>
-                  <p className="truncate text-sm text-slate-400">Board: {[hand.board.flop, hand.board.turn, hand.board.river].filter(Boolean).join(" / ") || "-"}</p>
+                  <p className="truncate text-sm text-slate-400">Board: {[formatBoard(hand, "flop"), formatBoard(hand, "turn"), formatBoard(hand, "river")].filter(Boolean).join(" / ") || "-"}</p>
                 </button>
                 <div className="mt-2 flex gap-2">
                   <button onClick={() => onEditHand(hand.id)} className="tap-small bg-slate-700">Edit</button>
@@ -431,6 +452,7 @@ function LiveMode({ session, hand, onBack, onSave }: {
   const [exactMode, setExactMode] = useState(false);
   const [exactCardRank, setExactCardRank] = useState("");
   const [boardTarget, setBoardTarget] = useState<BoardTarget>("flop");
+  const [selectedSize, setSelectedSize] = useState("");
 
   useEffect(() => {
     setDraft(hand ? structuredClone(hand) : newHand());
@@ -455,6 +477,7 @@ function LiveMode({ session, hand, onBack, onSave }: {
         id: uid(),
         position: selectedPosition,
         action,
+        size: activeStreet !== "preflop" && (action === "Bet" || action === "Raise") ? selectedSize : "",
         street: activeStreet,
         order: current.actions[activeStreet].length + 1,
         createdAt: nowIso(),
@@ -523,6 +546,18 @@ function LiveMode({ session, hand, onBack, onSave }: {
     });
   }
 
+  function appendBoardSuit(suit: string) {
+    setDraft((current) => {
+      if (boardTarget === "flop") {
+        const currentValue = current.board.flopSuits || "";
+        if (currentValue.length >= 3) return current;
+        return { ...current, updatedAt: nowIso(), board: { ...current.board, flopSuits: `${currentValue}${suit}` } };
+      }
+      const key = boardTarget === "turn" ? "turnSuit" : "riverSuit";
+      return { ...current, updatedAt: nowIso(), board: { ...current.board, [key]: suit } };
+    });
+  }
+
   function backspaceBoard() {
     setDraft((current) => ({
       ...current,
@@ -533,10 +568,34 @@ function LiveMode({ session, hand, onBack, onSave }: {
 
   function clearBoard(target?: BoardTarget) {
     if (target) {
-      patchBoard({ [target]: "" });
+      if (target === "flop") patchBoard({ flop: "", flopSuits: "" });
+      if (target === "turn") patchBoard({ turn: "", turnSuit: "" });
+      if (target === "river") patchBoard({ river: "", riverSuit: "" });
       return;
     }
-    patchBoard({ flop: "", turn: "", river: "" });
+    patchBoard({ flop: "", flopSuits: "", turn: "", turnSuit: "", river: "", riverSuit: "", tags: [] });
+  }
+
+  function backspaceSuit() {
+    setDraft((current) => {
+      if (boardTarget === "flop") {
+        return { ...current, updatedAt: nowIso(), board: { ...current.board, flopSuits: (current.board.flopSuits || "").slice(0, -1) } };
+      }
+      const key = boardTarget === "turn" ? "turnSuit" : "riverSuit";
+      return { ...current, updatedAt: nowIso(), board: { ...current.board, [key]: "" } };
+    });
+  }
+
+  function clearFlopSuits() {
+    patchBoard({ flopSuits: "" });
+  }
+
+  function toggleBoardTag(tag: string) {
+    setDraft((current) => {
+      const tags = current.board.tags || [];
+      const nextTags = tags.includes(tag) ? tags.filter((item) => item !== tag) : [...tags, tag];
+      return { ...current, updatedAt: nowIso(), board: { ...current.board, tags: nextTags } };
+    });
   }
 
   function save(makeNew: boolean) {
@@ -601,12 +660,30 @@ function LiveMode({ session, hand, onBack, onSave }: {
           <div className="mb-3 grid grid-cols-3 gap-2">
             {boardTargets.map((target) => (
               <button key={target} onClick={() => setBoardTarget(target)} className={`tap-btn ${boardTarget === target ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>
-                {target === "flop" ? "Flop" : target === "turn" ? "Turn" : "River"} {draft.board[target] || ""}
+                {target === "flop" ? "Flop" : target === "turn" ? "Turn" : "River"} {formatBoard(draft, target) || ""}
               </button>
             ))}
           </div>
           <div className="mb-3 grid grid-cols-7 gap-2">
             {ranks.map((rank) => <button key={`board-${rank}`} onClick={() => appendBoardRank(rank)} className="tap-chip">{rank}</button>)}
+          </div>
+          <div className="mb-3 rounded-md border border-slate-700 bg-slate-900 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-xs font-black uppercase text-slate-400">
+                {boardTarget === "flop" ? "Flop suit pattern" : `${boardTarget} suit`}
+                <span className="ml-2 text-emerald-300">
+                  {boardTarget === "flop" ? draft.board.flopSuits || "-" : boardTarget === "turn" ? draft.board.turnSuit || "-" : draft.board.riverSuit || "-"}
+                </span>
+              </p>
+              {boardTarget === "flop" && draft.board.flopSuits && draft.board.flopSuits.length !== draft.board.flop.length && <span className="text-xs font-bold text-amber-300">suit incomplete</span>}
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {["s", "h", "d", "c"].map((suit) => <button key={`board-suit-${suit}`} onClick={() => appendBoardSuit(suit)} className="tap-btn bg-slate-700">{suit}</button>)}
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button onClick={backspaceSuit} className="tap-small bg-slate-700">Backspace suit</button>
+              <button onClick={clearFlopSuits} className="tap-small bg-red-950 text-red-200">Clear Flop Suits</button>
+            </div>
           </div>
           <div className="grid grid-cols-3 gap-2">
             <input className="fast-input" value={draft.board.flop} onChange={(event) => patchBoard({ flop: event.target.value })} placeholder="Flop 986" />
@@ -617,6 +694,12 @@ function LiveMode({ session, hand, onBack, onSave }: {
             <button onClick={backspaceBoard} className="tap-small bg-slate-700">Delete last</button>
             <button onClick={() => clearBoard(boardTarget)} className="tap-small bg-red-950 text-red-200">Clear {boardTarget}</button>
             <button onClick={() => clearBoard()} className="tap-small bg-red-950 text-red-200">Clear Board</button>
+          </div>
+          <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-300">Board texture</p>
+          <div className="grid grid-cols-4 gap-2">
+            {boardTags.map((tag) => (
+              <button key={tag} onClick={() => toggleBoardTag(tag)} className={`tap-small ${(draft.board.tags || []).includes(tag) ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>{tag}</button>
+            ))}
           </div>
         </div>
 
@@ -630,6 +713,17 @@ function LiveMode({ session, hand, onBack, onSave }: {
           <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-300">Position</p>
           <ButtonGrid items={positions} selected={selectedPosition} onPick={setSelectedPosition} />
           <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-300">Action</p>
+          {activeStreet !== "preflop" && (
+            <div className="mb-3 rounded-md border border-slate-700 bg-slate-900 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <p className="text-xs font-black uppercase text-slate-400">Bet / Raise size</p>
+                <button onClick={() => setSelectedSize("")} className="text-xs font-bold text-slate-400">No size</button>
+              </div>
+              <div className="grid grid-cols-6 gap-2">
+                {betSizes.map((size) => <button key={size} onClick={() => setSelectedSize(size)} className={`tap-small ${selectedSize === size ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>{size}</button>)}
+              </div>
+            </div>
+          )}
           <div className="grid grid-cols-3 gap-2">
             {actions.map((action) => <button key={action} onClick={() => appendAction(action)} className="tap-btn bg-slate-700">{action}</button>)}
           </div>
