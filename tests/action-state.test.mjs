@@ -1,218 +1,145 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const order = ["UTG", "UTG1", "UTG2", "LJ", "HJ", "CO", "BTN", "SB", "BB"];
-const session = { smallBlindAmount: 50, bigBlindAmount: 100, rakePercent: 5, rakeCapBb: 3 };
-const streetOrder = ["preflop", "flop", "turn", "river"];
+const streets = ["preflop", "flop", "turn", "river"];
 
-function initState() {
+function blankActions() {
+  return { preflop: [], flop: [], turn: [], river: [] };
+}
+
+function newHand() {
   return {
-    street: "preflop",
-    currentBet: session.bigBlindAmount,
-    minimumRaiseIncrement: session.bigBlindAmount,
-    status: Object.fromEntries(order.map((id) => [id, "ACTIVE"])),
-    contribution: { SB: session.smallBlindAmount, BB: session.bigBlindAmount },
-    pendingPlayers: order.filter((id) => id !== "BB"),
-    actions: [
-      { street: "preflop", playerId: "SB", actionType: "BLIND", amountChips: 50, note: "BLIND" },
-      { street: "preflop", playerId: "BB", actionType: "BLIND", amountChips: 100, note: "BLIND" },
-    ],
+    id: "hand-1",
+    heroPosition: "",
+    heroHand: "",
+    board: { flop: "", turn: "", river: "" },
+    actions: blankActions(),
+    result: "",
+    amountMemo: "",
+    handMemo: "",
   };
 }
 
-function activeAfter(actorId, state) {
-  const start = order.indexOf(actorId);
-  return [...order.slice(start + 1), ...order.slice(0, start)]
-    .filter((id) => id !== actorId && state.status[id] === "ACTIVE");
-}
-
-function act(state, playerId, actionType, amountChips = 0) {
-  assert.equal(state.pendingPlayers[0], playerId);
-  const next = structuredClone(state);
-  let loggedAmount = amountChips;
-  if (actionType === "FOLD") {
-    next.status[playerId] = "FOLDED";
-    next.pendingPlayers = next.pendingPlayers.filter((id) => id !== playerId);
-  }
-  if (actionType === "CALL") {
-    next.contribution[playerId] = next.currentBet;
-    loggedAmount = next.currentBet;
-    next.pendingPlayers = next.pendingPlayers.filter((id) => id !== playerId);
-  }
-  if (actionType === "RAISE" || actionType === "BET") {
-    assert.ok(amountChips > next.currentBet);
-    next.minimumRaiseIncrement = amountChips - next.currentBet;
-    next.currentBet = amountChips;
-    next.contribution[playerId] = amountChips;
-    next.pendingPlayers = activeAfter(playerId, next);
-  }
-  if (actionType === "ALL_IN") {
-    next.status[playerId] = "ALL_IN";
-    next.contribution[playerId] = amountChips;
-    const isFullRaise = amountChips >= next.currentBet + next.minimumRaiseIncrement;
-    if (isFullRaise) {
-      next.minimumRaiseIncrement = amountChips - next.currentBet;
-      next.currentBet = amountChips;
-      next.pendingPlayers = activeAfter(playerId, next);
-    } else {
-      next.pendingPlayers = next.pendingPlayers.filter((id) => id !== playerId);
-    }
-  }
-  next.actions.push({ street: next.street, playerId, actionType, amountChips: loggedAmount, note: "USER" });
-  return next;
-}
-
-function scenarioToBbReraise() {
-  let state = act(initState(), "UTG", "RAISE", 300);
-  state = act(state, "UTG1", "FOLD");
-  state = act(state, "UTG2", "FOLD");
-  state = act(state, "LJ", "FOLD");
-  state = act(state, "HJ", "FOLD");
-  state = act(state, "CO", "FOLD");
-  state = act(state, "BTN", "CALL");
-  state = act(state, "SB", "FOLD");
-  state = act(state, "BB", "RAISE", 900);
-  return state;
-}
-
-function scenarioRequestedReraise() {
-  let state = initState();
-  state = act(state, "UTG", "FOLD");
-  state = act(state, "UTG1", "FOLD");
-  state = act(state, "UTG2", "FOLD");
-  state = act(state, "LJ", "FOLD");
-  state = act(state, "HJ", "RAISE", 900);
-  state = act(state, "CO", "FOLD");
-  state = act(state, "BTN", "CALL");
-  state = act(state, "SB", "FOLD");
-  state = act(state, "BB", "RAISE", 2000);
-  return state;
-}
-
-function playerActions(state, playerId, street = "preflop") {
-  return state.actions.filter((action) => action.street === street && action.playerId === playerId && action.note !== "BLIND");
-}
-
-function streetParticipants(state, street) {
-  const streetIndex = streetOrder.indexOf(street);
-  return order.filter((id) => !state.actions.some((action) => (
-    action.playerId === id &&
-    action.actionType === "FOLD" &&
-    streetOrder.indexOf(action.street) < streetIndex
-  )));
-}
-
-function displayForStreet(state, street) {
-  return Object.fromEntries(streetParticipants(state, street).map((id) => [
-    id,
-    playerActions(state, id, street).map((action) => `${action.actionType}${action.amountChips ? ` ${action.amountChips}` : ""}`).join(" / ") || "UNINPUT",
-  ]));
-}
-
-test("UTG Raise 300 makes every other active player pending in table order", () => {
-  const state = act(initState(), "UTG", "RAISE", 300);
-  assert.equal(state.currentBet, 300);
-  assert.equal(state.contribution.UTG, 300);
-  assert.deepEqual(state.pendingPlayers, ["UTG1", "UTG2", "LJ", "HJ", "CO", "BTN", "SB", "BB"]);
-});
-
-test("UTG raise, BTN call, BB raise makes UTG and BTN pending", () => {
-  const state = scenarioToBbReraise();
-  assert.equal(state.currentBet, 900);
-  assert.equal(state.contribution.BB, 900);
-  assert.deepEqual(state.pendingPlayers, ["UTG", "BTN"]);
-});
-
-test("UTG call after BB raise leaves only BTN pending", () => {
-  const state = act(scenarioToBbReraise(), "UTG", "CALL");
-  assert.equal(state.contribution.UTG, 900);
-  assert.deepEqual(state.pendingPlayers, ["BTN"]);
-});
-
-test("BTN raise 2000 sends action to BB then UTG", () => {
-  let state = act(scenarioToBbReraise(), "UTG", "CALL");
-  state = act(state, "BTN", "RAISE", 2000);
-  assert.equal(state.currentBet, 2000);
-  assert.equal(state.contribution.BTN, 2000);
-  assert.deepEqual(state.pendingPlayers, ["BB", "UTG"]);
-});
-
-test("folded players are never re-added to pending after raise", () => {
-  const state = scenarioToBbReraise();
-  assert.equal(state.status.UTG1, "FOLDED");
-  assert.equal(state.status.SB, "FOLDED");
-  assert.ok(!state.pendingPlayers.includes("UTG1"));
-  assert.ok(!state.pendingPlayers.includes("SB"));
-});
-
-test("all-in players are never re-added to pending after later raise", () => {
-  let state = act(initState(), "UTG", "ALL_IN", 300);
-  state = act(state, "UTG1", "FOLD");
-  state = act(state, "UTG2", "FOLD");
-  state = act(state, "LJ", "RAISE", 900);
-  assert.equal(state.status.UTG, "ALL_IN");
-  assert.ok(!state.pendingPlayers.includes("UTG"));
-});
-
-test("street ends when pendingPlayers becomes empty", () => {
-  let state = act(scenarioToBbReraise(), "UTG", "CALL");
-  state = act(state, "BTN", "RAISE", 2000);
-  state = act(state, "BB", "CALL");
-  state = act(state, "UTG", "CALL");
-  assert.deepEqual(state.pendingPlayers, []);
-});
-
-test("HJ gets next action after HJ raise, BTN call, BB raise", () => {
-  const state = scenarioRequestedReraise();
-  assert.deepEqual(state.pendingPlayers, ["HJ", "BTN"]);
-});
-
-test("HJ Call 20 appends without deleting HJ Raise 9", () => {
-  const state = act(scenarioRequestedReraise(), "HJ", "CALL");
-  assert.deepEqual(playerActions(state, "HJ").map((action) => action.actionType), ["RAISE", "CALL"]);
-});
-
-test("HJ has both HJ Raise 9 and HJ Call 20 action logs", () => {
-  const state = act(scenarioRequestedReraise(), "HJ", "CALL");
-  assert.deepEqual(playerActions(state, "HJ").map((action) => action.amountChips), [900, 2000]);
-});
-
-test("BTN second call appends without deleting first BTN call", () => {
-  let state = act(scenarioRequestedReraise(), "HJ", "CALL");
-  state = act(state, "BTN", "CALL");
-  assert.deepEqual(playerActions(state, "BTN").map((action) => action.amountChips), [900, 2000]);
-});
-
-test("folded player remains visible as Fold on same street", () => {
-  const state = scenarioRequestedReraise();
-  assert.equal(displayForStreet(state, "preflop").UTG, "FOLD");
-});
-
-test("folded player is not an action candidate on same street", () => {
-  const state = scenarioRequestedReraise();
-  assert.ok(!state.pendingPlayers.includes("UTG"));
-  assert.ok(!state.pendingPlayers.includes("CO"));
-});
-
-test("preflop folded players are hidden on flop", () => {
-  const state = scenarioRequestedReraise();
-  assert.ok(!streetParticipants(state, "flop").includes("UTG"));
-  assert.ok(!streetParticipants(state, "flop").includes("CO"));
-});
-
-test("flop folded player remains on flop display and is hidden on turn", () => {
-  let state = {
-    ...initState(),
-    street: "flop",
-    currentBet: 0,
-    contribution: {},
-    pendingPlayers: ["HJ", "BTN", "BB"],
-    actions: [],
-    status: { ...Object.fromEntries(order.map((id) => [id, "FOLDED"])), HJ: "ACTIVE", BTN: "ACTIVE", BB: "ACTIVE" },
+function appendAction(hand, street, position, action) {
+  return {
+    ...hand,
+    actions: {
+      ...hand.actions,
+      [street]: [
+        ...hand.actions[street],
+        { id: `${street}-${hand.actions[street].length + 1}`, street, position, action, order: hand.actions[street].length + 1 },
+      ],
+    },
   };
-  state = act(state, "HJ", "BET", 900);
-  state = act(state, "BTN", "FOLD");
-  state = act(state, "BB", "CALL");
-  assert.equal(displayForStreet(state, "flop").BTN, "FOLD");
-  assert.ok(!streetParticipants(state, "turn").includes("BTN"));
+}
+
+function actionsText(actions) {
+  return actions.map((item) => `${item.position} ${item.action}`).join(" / ");
+}
+
+function buildExportText(session) {
+  return [
+    "Session:",
+    `Date: ${session.dateTime.replace("T", " ")}`,
+    `Place: ${session.place}`,
+    `Stake: ${session.stake}`,
+    `Buy-in: ${session.buyIn}`,
+    `Rebuy/Add-on: ${session.rebuy}`,
+    `Cash-out: ${session.cashOut}`,
+    `Rake: ${session.rakeMemo}`,
+    "",
+    "Player Notes:",
+    session.playerNotesText,
+    "",
+    "Session Memo:",
+    session.sessionMemo,
+    "",
+    "Hands:",
+    ...session.hands.map((hand, index) => [
+      "",
+      `${index + 1})`,
+      `Hero: ${hand.heroPosition || "-"} / ${hand.heroHand || "-"}`,
+      `PF: ${actionsText(hand.actions.preflop)}`,
+      `Flop: ${hand.board.flop}${hand.board.flop ? " / " : ""}${actionsText(hand.actions.flop)}`,
+      `Turn: ${hand.board.turn}${hand.board.turn ? " / " : ""}${actionsText(hand.actions.turn)}`,
+      `River: ${hand.board.river}${hand.board.river ? " / " : ""}${actionsText(hand.actions.river)}`,
+      `Result: ${hand.result}`,
+      `Amount: ${hand.amountMemo}`,
+      `Memo: ${hand.handMemo}`,
+    ].join("\n")),
+  ].join("\n");
+}
+
+test("actions append in pressed order and never overwrite the same position", () => {
+  let hand = newHand();
+  hand = appendAction(hand, "preflop", "HJ", "Open");
+  hand = appendAction(hand, "preflop", "BB", "3bet");
+  hand = appendAction(hand, "preflop", "HJ", "Call");
+
+  assert.equal(hand.actions.preflop.length, 3);
+  assert.deepEqual(hand.actions.preflop.map((item) => `${item.position} ${item.action}`), ["HJ Open", "BB 3bet", "HJ Call"]);
+});
+
+test("bet amount is not required to save a useful hand note", () => {
+  let hand = newHand();
+  hand.heroPosition = "BTN";
+  hand.heroHand = "AKo";
+  hand = appendAction(hand, "preflop", "CO", "Open");
+  hand = appendAction(hand, "preflop", "BTN", "3bet");
+  hand.board.flop = "A72";
+  hand = appendAction(hand, "flop", "CO", "Check");
+  hand = appendAction(hand, "flop", "BTN", "Bet");
+  hand.result = "Win";
+  hand.amountMemo = "+4500";
+
+  assert.equal(hand.heroPosition, "BTN");
+  assert.equal(hand.actions.flop.length, 2);
+  assert.equal(hand.amountMemo, "+4500");
+});
+
+test("session export includes session memo, player notes, and linked hands", () => {
+  let hand = newHand();
+  hand.heroPosition = "HJ";
+  hand.heroHand = "JJ";
+  hand.board.flop = "986";
+  hand = appendAction(hand, "preflop", "HJ", "Open");
+  hand = appendAction(hand, "preflop", "BB", "3bet");
+  hand = appendAction(hand, "preflop", "HJ", "Call");
+  hand = appendAction(hand, "flop", "BB", "Bet");
+  hand = appendAction(hand, "flop", "HJ", "Raise");
+  hand.result = "Lose";
+  hand.amountMemo = "-12000";
+  hand.handMemo = "完成ストレートを軽視。";
+
+  const session = {
+    dateTime: "2026-04-30T19:30",
+    place: "渋谷",
+    stake: "1-3",
+    buyIn: "30000",
+    rebuy: "",
+    cashOut: "42000",
+    rakeMemo: "10% capあり",
+    playerNotesText: "BTN: コール多め",
+    sessionMemo: "ルースな卓",
+    hands: [hand],
+  };
+
+  const text = buildExportText(session);
+  assert.match(text, /Player Notes:\nBTN: コール多め/);
+  assert.match(text, /PF: HJ Open \/ BB 3bet \/ HJ Call/);
+  assert.match(text, /Flop: 986 \/ BB Bet \/ HJ Raise/);
+  assert.match(text, /Amount: -12000/);
+});
+
+test("all streets keep independent append-only logs", () => {
+  let hand = newHand();
+  for (const street of streets) {
+    hand = appendAction(hand, street, "BB", street === "preflop" ? "Call" : "Check");
+    hand = appendAction(hand, street, "HJ", street === "preflop" ? "Open" : "Bet");
+  }
+
+  assert.equal(hand.actions.preflop.length, 2);
+  assert.equal(hand.actions.flop.length, 2);
+  assert.equal(hand.actions.turn.length, 2);
+  assert.equal(hand.actions.river.length, 2);
 });

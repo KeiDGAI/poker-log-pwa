@@ -55,3 +55,86 @@ button {
   font-size: 0.875rem;
   font-weight: 900;
 }
+
+.tap-btn {
+  display: inline-flex;
+  min-height: 3rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  border-radius: 0.5rem;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.875rem;
+  font-weight: 900;
+  line-height: 1.1;
+  touch-action: manipulation;
+}
+
+.tap-primary {
+  display: inline-flex;
+  min-height: 3.4rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 0.6rem;
+  background: #10b981;
+  color: #020617;
+  padding: 0.75rem 0.9rem;
+  font-size: 0.95rem;
+  font-weight: 950;
+  line-height: 1.1;
+  touch-action: manipulation;
+}
+
+.tap-small {
+  display: inline-flex;
+  min-height: 2.35rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.3rem;
+  border-radius: 0.45rem;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.8rem;
+  font-weight: 900;
+  line-height: 1.1;
+  touch-action: manipulation;
+}
+
+.tap-chip {
+  min-height: 2.55rem;
+  border-radius: 0.45rem;
+  background: #334155;
+  color: #f8fafc;
+  padding: 0.45rem 0.25rem;
+  font-size: 0.875rem;
+  font-weight: 900;
+  touch-action: manipulation;
+}
+
+.fast-input {
+  min-height: 2.9rem;
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid #475569;
+  background: #020617;
+  color: #f8fafc;
+  padding: 0 0.75rem;
+  font-size: 1rem;
+  outline: none;
+}
+
+.fast-input:focus,
+.fast-textarea:focus {
+  border-color: #10b981;
+}
+
+.fast-textarea {
+  width: 100%;
+  border-radius: 0.5rem;
+  border: 1px solid #475569;
+  background: #020617;
+  color: #f8fafc;
+  padding: 0.75rem;
+  font-size: 1rem;
+  outline: none;
+}
