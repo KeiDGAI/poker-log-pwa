@@ -1142,7 +1142,8 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   const [showdownCards, setShowdownCards] = useState<Record<string, string[]>>({});
   const [cardTarget, setCardTarget] = useState<{ label: string; max: number; cards: string[]; setCards: (cards: string[]) => void; onComplete?: () => void } | null>(null);
   const [resultOpen, setResultOpen] = useState(false);
-  const [winnerId, setWinnerId] = useState("");
+  const [winnerIds, setWinnerIds] = useState<string[]>([]);
+  const [resultAmounts, setResultAmounts] = useState<Record<string, string>>({});
   const [resultText, setResultText] = useState("");
   const [memo, setMemo] = useState("");
 
@@ -1157,34 +1158,53 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
     ...visibleActions("preflop"),
     ...actions.filter((action) => action.street !== "preflop"),
   ].map((action, index) => ({ ...action, order: index + 1 }));
-  const currentPotAmount = estimatePot(currentFinalActions);
+  const currentPotAmount = estimatePotByStreetContributions(currentFinalActions);
   const currentRakeAmount = estimateRake(currentPotAmount, session);
   const winnerAmount = Math.max(0, currentPotAmount - currentRakeAmount);
+  const activeStreetState = streetState([...blindActions(activePlayers, blinds, session), ...actions], activeStreet, session, blinds);
+  const activeStreetPlayers = playersForStreet(activeStreet);
+  const activeRequiredPlayers = requiredPlayers(activeStreetPlayers, [...blindActions(activePlayers, blinds, session), ...actions], activeStreet, session, blinds);
+  const activeActorId = activeRequiredPlayers[0]?.id;
 
   function visibleActions(street: Street) {
     return actions.filter((action) => action.street === street).sort((a, b) => a.order - b.order);
   }
 
   function playersForStreet(street: Street) {
+    if (!canStreetStart(street)) return [];
     const base = street === "preflop" ? preflopOrder : orderedPostflopPlayers(activePlayers, buttonSeat);
-    return base.filter((player) => !hasFoldedBeforeStreet(player.id, actions, street) && !isAllInBeforeStreet(player.id, actions, street));
+    return base.filter((player) => !hasFoldedThroughStreet(player.id, actions, street) && !isAllInThroughStreet(player.id, actions, street));
   }
 
   function actionRowsForStreet(street: Street) {
-    const base = playersForStreet(street).map((player) => ({ player, repeat: false }));
-    const streetActions = actions.filter((action) => action.street === street);
-    const latestRaise = [...streetActions].reverse().find((action) => action.actionType === "bet_raise" || action.actionType === "allin");
-    if (!latestRaise) return base;
+    const streetActions = [...blindActions(activePlayers, blinds, session), ...actions];
+    const state = streetState(streetActions, street, session, blinds);
+    const required = requiredPlayers(playersForStreet(street), streetActions, street, session, blinds);
+    const currentActor = required[0];
+    return playersForStreet(street).map((player) => ({
+      player,
+      latest: state.latestByPlayer.get(player.id),
+      isCurrent: currentActor?.id === player.id,
+      isRequired: required.some((item) => item.id === player.id),
+    }));
+  }
 
-    const latestByPlayer = new Map<string, HandAction>();
-    streetActions.forEach((action) => latestByPlayer.set(action.actorSessionPlayerId, action));
-    const repeatPlayers = playersForStreet(street).filter((player) => {
-      if (player.id === latestRaise.actorSessionPlayerId) return false;
-      const latest = latestByPlayer.get(player.id);
-      if (latest?.actionType === "fold" || latest?.actionType === "allin") return false;
-      return !latest || latest.order < latestRaise.order;
-    });
-    return [...base, ...repeatPlayers.map((player) => ({ player, repeat: true }))];
+  function canStreetStart(street: Street) {
+    const order: Street[] = ["preflop", "flop", "turn", "river", "showdown"];
+    const index = order.indexOf(street);
+    if (index <= 0) return true;
+    return order.slice(0, index).every((item) => isStreetComplete(item));
+  }
+
+  function isStreetComplete(street: Street) {
+    const streetPlayers = playersForStreetWithoutCompletionCheck(street);
+    if (streetPlayers.length <= 1) return true;
+    return requiredPlayers(streetPlayers, [...blindActions(activePlayers, blinds, session), ...actions], street, session, blinds).length === 0;
+  }
+
+  function playersForStreetWithoutCompletionCheck(street: Street) {
+    const base = street === "preflop" ? preflopOrder : orderedPostflopPlayers(activePlayers, buttonSeat);
+    return base.filter((player) => !hasFoldedThroughStreet(player.id, actions, street) && !isAllInThroughStreet(player.id, actions, street));
   }
 
   function addAction(player: SessionPlayer, actionType: ActionType, amountInput = "", street = activeStreet) {
@@ -1192,34 +1212,33 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
     const playerIndex = orderPlayers.findIndex((item) => item.id === player.id);
     const streetRank = ["preflop", "flop", "turn", "river", "showdown"] as Street[];
     const streetIndex = streetRank.indexOf(street);
+    const currentActor = requiredPlayers(orderPlayers, [...blindActions(activePlayers, blinds, session), ...actions], street, session, blinds)[0];
+    if (currentActor?.id !== player.id) return;
     const prunedActions = actions.filter((action) => {
       const actionStreetIndex = streetRank.indexOf(action.street);
       if (actionStreetIndex > streetIndex) return false;
       if (action.street !== street) return true;
       const actorIndex = orderPlayers.findIndex((item) => item.id === action.actorSessionPlayerId);
-      return actorIndex !== -1 && actorIndex < playerIndex;
+      if (actorIndex === -1) return false;
+      if (actorIndex < playerIndex) return true;
+      return false;
     });
-    const autoFoldActions = skippedPlayersForAction(orderPlayers, prunedActions, street, player.id, actionType, session, blinds).map((skippedPlayer, index) => ({
-      id: uid(),
-      street,
-      actorSessionPlayerId: skippedPlayer.id,
-      actionType: "fold" as ActionType,
-      note: "[AUTO] Fold",
-      order: prunedActions.length + index + 1,
-    }));
-    const stateBeforeAction = streetState([...blindActions(activePlayers, blinds, session), ...prunedActions, ...autoFoldActions], street, session, blinds);
+    const stateBeforeAction = streetState([...blindActions(activePlayers, blinds, session), ...prunedActions], street, session, blinds);
     const currentContribution = stateBeforeAction.contributions.get(player.id) || 0;
     const targetAmount = parseAmount(amountInput, session.amountInputUnit) || 0;
     const amount = actionType === "call"
-      ? Math.max(0, stateBeforeAction.currentBet - currentContribution)
+      ? stateBeforeAction.currentBet
       : actionType === "bet_raise"
-        ? Math.max(0, targetAmount - currentContribution)
+        ? targetAmount
+        : actionType === "allin"
+          ? targetAmount
         : undefined;
-    const displayAmount = actionType === "call" ? amount : actionType === "bet_raise" ? targetAmount : undefined;
-    const text = `[USER] ${actionLabels[actionType]}${displayAmount ? ` ${formatShortAmount(displayAmount, session)}` : ""}`;
-    setActions([
+    if (actionType === "check" && stateBeforeAction.currentBet > 0 && currentContribution < stateBeforeAction.currentBet) return;
+    if (actionType === "call" && (stateBeforeAction.currentBet <= 0 || currentContribution >= stateBeforeAction.currentBet)) return;
+    if ((actionType === "bet_raise" || actionType === "allin") && targetAmount <= currentContribution) return;
+    const text = "USER";
+    const nextActions = [
       ...prunedActions,
-      ...autoFoldActions,
       {
         id: uid(),
         street,
@@ -1227,10 +1246,45 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
         actionType,
         amount,
         note: text,
-        order: prunedActions.length + autoFoldActions.length + 1,
+        order: prunedActions.length + 1,
       },
-    ].map((action, index) => ({ ...action, order: index + 1 })));
+    ].map((action, index) => ({ ...action, order: index + 1 }));
+    setActions(nextActions);
+    const remainingPlayers = orderedPlayers.filter((item) => !hasFoldedThroughStreet(item.id, nextActions, "showdown"));
+    if (remainingPlayers.length <= 1) {
+      setWinnerIds(remainingPlayers[0] ? [remainingPlayers[0].id] : []);
+      setResultOpen(true);
+    } else if (isStreetCompleteForActions(street, nextActions)) {
+      const next = nextStreet(street);
+      if (next) setActiveStreet(next);
+      else setResultOpen(true);
+    }
     setActionTarget(null);
+  }
+
+  function foldToPlayer(street: Street, targetPlayerId: string) {
+    const orderPlayers = playersForStreet(street);
+    const currentActor = requiredPlayers(orderPlayers, [...blindActions(activePlayers, blinds, session), ...actions], street, session, blinds)[0];
+    const currentIndex = orderPlayers.findIndex((player) => player.id === currentActor?.id);
+    const targetIndex = orderPlayers.findIndex((player) => player.id === targetPlayerId);
+    if (currentIndex === -1 || targetIndex <= currentIndex) return;
+    const autoActions = orderPlayers.slice(currentIndex, targetIndex).map((player, index) => ({
+      id: uid(),
+      street,
+      actorSessionPlayerId: player.id,
+      actionType: "fold" as ActionType,
+      note: "AUTO",
+      order: actions.length + index + 1,
+    }));
+    setActions((current) => [...current, ...autoActions].map((action, index) => ({ ...action, order: index + 1 })));
+    setActiveStreet(street);
+  }
+
+  function isStreetCompleteForActions(street: Street, nextActions: HandAction[]) {
+    const base = street === "preflop" ? preflopOrder : orderedPostflopPlayers(activePlayers, buttonSeat);
+    const candidates = base.filter((player) => !hasFoldedThroughStreet(player.id, nextActions, street) && !isAllInThroughStreet(player.id, nextActions, street));
+    if (candidates.length <= 1) return true;
+    return requiredPlayers(candidates, [...blindActions(activePlayers, blinds, session), ...nextActions], street, session, blinds).length === 0;
   }
 
   function undoLastAction(street: Street) {
@@ -1252,10 +1306,14 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
       ...action,
       order: index + 1,
     }));
-    const potAmount = estimatePot(finalActions);
+    const potAmount = estimatePotByStreetContributions(finalActions);
     const rakeAmount = estimateRake(potAmount, session);
     const wonAmount = Math.max(0, potAmount - rakeAmount);
+    const selectedWinnerIds = winnerIds.length ? winnerIds : livePlayers.length === 1 ? [livePlayers[0].id] : [];
+    const defaultShare = selectedWinnerIds.length ? wonAmount / selectedWinnerIds.length : 0;
     const participants: HandParticipant[] = orderedPlayers.map((player) => {
+      const manualResult = parseAmount(resultAmounts[player.id], session.amountInputUnit);
+      const resultAmount = selectedWinnerIds.includes(player.id) ? manualResult ?? defaultShare : undefined;
       return {
         id: uid(),
         sessionPlayerId: player.id,
@@ -1267,9 +1325,10 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
         foldedStreet: foldedStreet(player.id, finalActions),
         showdownStatus: showdownStatus[player.id] || "unknown",
         showdownCards: showdownCards[player.id] || [],
-        resultAmount: winnerId === player.id ? wonAmount : undefined,
+        resultAmount,
       };
     });
+    const movedAmount = participants.reduce((sum, participant) => sum + (participant.resultAmount || 0), 0);
     await db.hands.add({
       id: uid(),
       sessionId: session.id,
@@ -1279,8 +1338,8 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
       actions: finalActions,
       potAmount,
       rakeAmount,
-      resultText: resultText || (winnerId ? `${orderedPlayers.find((player) => player.id === winnerId)?.displayName || "Winner"} won ${formatShortAmount(wonAmount, session)}` : undefined),
-      movedBb: amountToBb(wonAmount, session.bigBlindAmount),
+      resultText: resultText || (selectedWinnerIds.length ? `${selectedWinnerIds.map((id) => orderedPlayers.find((player) => player.id === id)?.displayName || "Winner").join(" / ")} won ${formatShortAmount(movedAmount || wonAmount, session)}` : undefined),
+      movedBb: amountToBb(movedAmount, session.bigBlindAmount),
       memo: [
         memo,
         potByStreet.flop && `Flop pot ${potByStreet.flop}`,
@@ -1314,6 +1373,9 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
           <div className="text-xs font-black text-slate-400">Game {games.length + 1}</div>
           <div className="truncate text-sm font-black">
             BTN: Seat{buttonSeat} / {POSITIONS_BY_PLAYERS[activePlayers.length]?.join(" ")}
+          </div>
+          <div className="mt-1 truncate text-xs font-bold text-slate-400">
+            現在: {activePlayers.find((player) => player.id === activeActorId)?.displayName || "Street完了"} / Bet {formatShortAmount(activeStreetState.currentBet, session)}
           </div>
         </div>
         <button type="button" onClick={saveGame} className="rounded-lg bg-emerald-700 px-4 text-sm font-black text-white">保存</button>
@@ -1369,18 +1431,17 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
                     <button type="button" onClick={() => undoLastAction(street)} className="text-xs font-bold text-slate-400">戻す</button>
                   </div>
                   <div className="grid gap-1">
-                    {rows.map(({ player, repeat }, rowIndex) => {
-                      const playerActions = visibleActions(street).filter((action) => action.actorSessionPlayerId === player.id);
-                      const latest = playerActions.at(-1);
-                      const isCurrent = actionTarget?.playerId === player.id && actionTarget.street === street;
+                    {rows.map(({ player, latest, isCurrent, isRequired }, rowIndex) => {
+                      const selected = actionTarget?.playerId === player.id && actionTarget.street === street;
                       return (
                         <button key={`${street}-${player.id}-${rowIndex}`} type="button" onClick={() => {
                           setActiveStreet(street);
-                          setActionTarget({ playerId: player.id, street });
-                        }} className={`grid grid-cols-[48px_1fr_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left ${isCurrent ? "bg-amber-300 text-slate-950" : "bg-slate-800 text-slate-100"}`}>
+                          if (isCurrent) setActionTarget({ playerId: player.id, street });
+                          else if (isRequired) foldToPlayer(street, player.id);
+                        }} className={`grid grid-cols-[48px_1fr_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left ${selected || isCurrent ? "bg-amber-300 text-slate-950" : isRequired ? "bg-slate-700 text-slate-100" : "bg-slate-800 text-slate-400"}`}>
                           <span className="rounded bg-slate-600 px-2 py-1 text-center text-xs font-black text-white">{positionMap.get(player.id) || "-"}</span>
-                          <span className="truncate text-sm font-black">{player.displayName}{repeat ? " / 再アクション" : ""}</span>
-                          <span className={`text-sm font-black ${actionColor(latest?.actionType)}`}>{latest ? actionDisplay(latest, session) : "未入力"}</span>
+                          <span className="truncate text-sm font-black">{player.displayName}{isCurrent ? " / 入力中" : isRequired ? " / ここまでFold" : ""}</span>
+                          <span className={`text-sm font-black ${actionColor(latest?.actionType)}`}>{latest ? actionDisplay(latest, session) : isRequired ? "未対応" : "対応済"}</span>
                         </button>
                       );
                     })}
@@ -1419,14 +1480,32 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
             <div className="grid max-h-[36dvh] gap-2 overflow-auto">
               {livePlayers.map((player) => (
                 <button key={player.id} type="button" onClick={() => {
-                  setWinnerId(player.id);
-                  setResultText(`${player.displayName} won ${formatShortAmount(winnerAmount, session)}`);
-                }} className={`h-10 rounded-md border text-sm font-black ${winnerId === player.id ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
+                  setWinnerIds((current) => {
+                    const next = current.includes(player.id) ? current.filter((id) => id !== player.id) : [...current, player.id];
+                    const share = next.length ? winnerAmount / next.length : 0;
+                    setResultAmounts((amounts) => Object.fromEntries(next.map((id) => [id, amounts[id] || String(share / session.amountInputUnit)])));
+                    setResultText(next.length ? `${next.map((id) => orderedPlayers.find((item) => item.id === id)?.displayName).filter(Boolean).join(" / ")} won` : "");
+                    return next;
+                  });
+                }} className={`h-10 rounded-md border text-sm font-black ${winnerIds.includes(player.id) ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
                   {positionMap.get(player.id)} {player.displayName}
                 </button>
               ))}
             </div>
           </div>
+          {winnerIds.length > 0 && (
+            <div className="grid gap-2">
+              <div className="text-xs font-black text-stone-600">勝者獲得額（省略入力・手動修正可）</div>
+              {winnerIds.map((id) => {
+                const player = orderedPlayers.find((item) => item.id === id);
+                return (
+                  <Field key={id} label={player?.displayName || "勝者"}>
+                    <input value={resultAmounts[id] || ""} onChange={(event) => setResultAmounts((current) => ({ ...current, [id]: event.target.value }))} inputMode="decimal" className="input" />
+                  </Field>
+                );
+              })}
+            </div>
+          )}
           <div className="rounded-md bg-emerald-50 p-2 text-sm font-bold text-emerald-900">
             勝者獲得: {formatShortAmount(winnerAmount, session)}
           </div>
@@ -1447,10 +1526,22 @@ function hasFoldedBeforeStreet(playerId: string, actions: HandAction[], street: 
   return actions.some((action) => action.actorSessionPlayerId === playerId && action.actionType === "fold" && order.indexOf(action.street) < targetIndex);
 }
 
-function isAllInBeforeStreet(playerId: string, actions: HandAction[], street: Street) {
+function hasFoldedThroughStreet(playerId: string, actions: HandAction[], street: Street) {
   const order: Street[] = ["preflop", "flop", "turn", "river", "showdown"];
   const targetIndex = order.indexOf(street);
-  return actions.some((action) => action.actorSessionPlayerId === playerId && action.actionType === "allin" && order.indexOf(action.street) < targetIndex);
+  return actions.some((action) => action.actorSessionPlayerId === playerId && action.actionType === "fold" && order.indexOf(action.street) <= targetIndex);
+}
+
+function isAllInThroughStreet(playerId: string, actions: HandAction[], street: Street) {
+  const order: Street[] = ["preflop", "flop", "turn", "river", "showdown"];
+  const targetIndex = order.indexOf(street);
+  return actions.some((action) => action.actorSessionPlayerId === playerId && action.actionType === "allin" && order.indexOf(action.street) <= targetIndex);
+}
+
+function nextStreet(street: Street) {
+  const order: Street[] = ["preflop", "flop", "turn", "river"];
+  const index = order.indexOf(street);
+  return index >= 0 ? order[index + 1] : undefined;
 }
 
 function blindActions(players: SessionPlayer[], blinds: ReturnType<typeof deriveButtonBlindSeats>, session: Session): HandAction[] {
@@ -1464,7 +1555,7 @@ function blindActions(players: SessionPlayer[], blinds: ReturnType<typeof derive
       actorSessionPlayerId: sb.id,
       actionType: "blind",
       amount: session.smallBlindAmount,
-      note: `[BLIND] SB ${formatShortAmount(session.smallBlindAmount, session)}`,
+      note: "BLIND",
       order: 0,
     });
   }
@@ -1475,7 +1566,7 @@ function blindActions(players: SessionPlayer[], blinds: ReturnType<typeof derive
       actorSessionPlayerId: bb.id,
       actionType: "blind",
       amount: session.bigBlindAmount,
-      note: `[BLIND] BB ${formatShortAmount(session.bigBlindAmount, session)}`,
+      note: "BLIND",
       order: 1,
     });
   }
@@ -1485,7 +1576,10 @@ function blindActions(players: SessionPlayer[], blinds: ReturnType<typeof derive
 function streetState(actions: HandAction[], street: Street, session: Session, blinds: ReturnType<typeof deriveButtonBlindSeats>) {
   const contributions = new Map<string, number>();
   let currentBet = street === "preflop" ? session.bigBlindAmount : 0;
+  let minimumRaiseIncrement = session.bigBlindAmount;
   const latestByPlayer = new Map<string, HandAction>();
+  let latestAggressiveOrder = -1;
+  let latestAggressorId = "";
 
   if (street === "preflop") {
     actions
@@ -1498,10 +1592,27 @@ function streetState(actions: HandAction[], street: Street, session: Session, bl
     .sort((a, b) => a.order - b.order)
     .forEach((action) => {
       latestByPlayer.set(action.actorSessionPlayerId, action);
-      if (action.amount) {
-        const nextContribution = (contributions.get(action.actorSessionPlayerId) || 0) + action.amount;
+      if (action.amount !== undefined) {
+        const nextContribution = action.amount;
         contributions.set(action.actorSessionPlayerId, nextContribution);
-        if (action.actionType === "bet_raise" || action.actionType === "allin") currentBet = Math.max(currentBet, nextContribution);
+        if (action.actionType === "bet_raise") {
+          const raiseIncrement = Math.max(0, nextContribution - currentBet);
+          if (nextContribution > currentBet) {
+            currentBet = nextContribution;
+            minimumRaiseIncrement = raiseIncrement || minimumRaiseIncrement;
+            latestAggressiveOrder = action.order;
+            latestAggressorId = action.actorSessionPlayerId;
+          }
+        }
+        if (action.actionType === "allin" && nextContribution > currentBet) {
+          const raiseIncrement = nextContribution - currentBet;
+          currentBet = nextContribution;
+          if (raiseIncrement >= minimumRaiseIncrement) {
+            minimumRaiseIncrement = raiseIncrement;
+            latestAggressiveOrder = action.order;
+            latestAggressorId = action.actorSessionPlayerId;
+          }
+        }
       }
     });
 
@@ -1510,39 +1621,32 @@ function streetState(actions: HandAction[], street: Street, session: Session, bl
     if (blinds.bbSeat) currentBet = Math.max(currentBet, session.bigBlindAmount);
   }
 
-  return { currentBet, contributions, latestByPlayer };
+  return { currentBet, minimumRaiseIncrement, contributions, latestByPlayer, latestAggressiveOrder, latestAggressorId };
 }
 
 function requiredPlayers(orderPlayers: SessionPlayer[], actions: HandAction[], street: Street, session: Session, blinds: ReturnType<typeof deriveButtonBlindSeats>) {
   const state = streetState(actions, street, session, blinds);
-  const latestRaise = [...actions]
-    .filter((action) => action.street === street && (action.actionType === "bet_raise" || action.actionType === "allin"))
-    .sort((a, b) => a.order - b.order)
-    .at(-1);
 
   return orderPlayers.filter((player) => {
     const latest = state.latestByPlayer.get(player.id);
     if (latest?.actionType === "fold" || latest?.actionType === "allin") return false;
+    const contribution = state.contributions.get(player.id) || 0;
+    if (state.currentBet === 0) return !latest;
+    if (contribution < state.currentBet) return true;
     if (!latest) return true;
-    if (!latestRaise || latestRaise.actorSessionPlayerId === player.id) return false;
-    return latest.order < latestRaise.order;
+    if (state.latestAggressiveOrder === -1 || state.latestAggressorId === player.id) return false;
+    return latest.order < state.latestAggressiveOrder;
   });
 }
 
-function skippedPlayersForAction(
-  orderPlayers: SessionPlayer[],
-  actions: HandAction[],
-  street: Street,
-  targetPlayerId: string,
-  actionType: ActionType,
-  session: Session,
-  blinds: ReturnType<typeof deriveButtonBlindSeats>
-) {
-  if (street !== "preflop" && actionType === "check") return [];
-  const targetIndex = orderPlayers.findIndex((player) => player.id === targetPlayerId);
-  if (targetIndex <= 0) return [];
-  const required = new Set(requiredPlayers(orderPlayers, actions, street, session, blinds).map((player) => player.id));
-  return orderPlayers.slice(0, targetIndex).filter((player) => required.has(player.id));
+function estimatePotByStreetContributions(actions: HandAction[]) {
+  const contributions = new Map<string, number>();
+  actions.forEach((action) => {
+    if (action.amount === undefined || action.actionType === "fold" || action.actionType === "check") return;
+    const key = `${action.street}:${action.actorSessionPlayerId}`;
+    contributions.set(key, Math.max(contributions.get(key) || 0, action.amount));
+  });
+  return [...contributions.values()].reduce((sum, amount) => sum + amount, 0);
 }
 
 function foldedStreet(playerId: string, actions: HandAction[]) {
@@ -1557,9 +1661,8 @@ function actionColor(type?: ActionType) {
 }
 
 function actionDisplay(action: HandAction, session: Session) {
-  if (action.note?.startsWith("[AUTO]")) return "Auto Fold";
-  if (action.note?.startsWith("[BLIND]")) return action.note.replace("[BLIND] ", "");
-  if (action.note?.startsWith("[USER]")) return action.note.replace("[USER] ", "");
+  if (action.note === "AUTO") return "Auto Fold";
+  if (action.note === "BLIND") return `${actionLabels[action.actionType]} ${formatShortAmount(action.amount, session)}`;
   const amount = action.amount ? ` ${formatShortAmount(action.amount, session)}` : "";
   return `${actionLabels[action.actionType]}${amount}`;
 }
@@ -1600,7 +1703,7 @@ function ActionSheet({
             ["allin", "All-in"],
           ] as [ActionType, string][]).map(([type, label]) => (
             <button key={type} type="button" onClick={() => {
-              if (type === "bet_raise") {
+              if (type === "bet_raise" || type === "allin") {
                 setPendingAction(type);
                 return;
               }
@@ -1611,15 +1714,15 @@ function ActionSheet({
             </button>
           ))}
         </div>
-        {pendingAction === "bet_raise" && (
+        {(pendingAction === "bet_raise" || pendingAction === "allin") && (
           <div className="grid gap-2">
-            <AmountInput label="Bet/Raise額（省略可）" value={amount} session={session} onChange={setAmount} />
+            <AmountInput label={pendingAction === "allin" ? "All-in額（省略可）" : "Bet/Raise額（省略可）"} value={amount} session={session} onChange={setAmount} />
             <button type="button" onClick={() => {
-              onAdd(player, "bet_raise", amount, target.street);
+              onAdd(player, pendingAction, amount, target.street);
               setAmount("");
               setPendingAction(null);
             }} className="h-11 rounded-md bg-emerald-800 text-sm font-black text-white">
-              Bet/Raiseを保存
+              {pendingAction === "allin" ? "All-inを保存" : "Bet/Raiseを保存"}
             </button>
           </div>
         )}
@@ -1912,8 +2015,7 @@ function buildMarkdown(session: Session, players: SessionPlayer[], games: Hand[]
       if (!streetActions.length) return;
       lines.push(`${streetLabels[street]}: ${streetActions.map((action) => {
         const actor = game.participants.find((participant) => participant.sessionPlayerId === action.actorSessionPlayerId);
-        if (action.note) return action.note;
-        return `${actor?.displayName || "不明"} ${actionLabels[action.actionType]}${action.amount ? ` ${formatAmount(action.amount, session.playUnitName)} (${formatBb(action.amount, session.bigBlindAmount)})` : ""}`;
+        return `${actor?.displayName || "不明"} ${actionDisplay(action, session)}${action.note ? ` [${action.note}]` : ""}`;
       }).join(", ")}`);
     });
     lines.push("Showdown:");

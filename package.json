@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build --webpack",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "node --test tests/action-state.test.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.2",
