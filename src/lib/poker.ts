@@ -1,4 +1,14 @@
-import type { Hand, HandAction, HandParticipant, Session, SessionPlayer, Street } from "./types";
+import type { Hand, HandAction, HandParticipant, Position, Session, SessionPlayer, Street } from "./types";
+
+export const POSITIONS_BY_PLAYERS: Record<number, Position[]> = {
+  9: ["UTG", "UTG1", "UTG2", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+  8: ["UTG", "UTG1", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+  7: ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"],
+  6: ["LJ", "HJ", "CO", "BTN", "SB", "BB"],
+  5: ["HJ", "CO", "BTN", "SB", "BB"],
+  4: ["CO", "BTN", "SB", "BB"],
+  3: ["BTN", "SB", "BB"],
+};
 
 export function parseAmount(input: string | number | undefined, amountInputUnit: number) {
   if (input === undefined || input === "") return undefined;
@@ -30,12 +40,16 @@ export function estimateRake(potAmount: number, session: Session) {
   return Math.min(potAmount * percent, cap);
 }
 
+export function activeSessionPlayers(players: SessionPlayer[]) {
+  return players.filter((player) => player.isActive !== false);
+}
+
 export function occupiedSeatPlayers(players: SessionPlayer[]) {
-  return [...players].sort((a, b) => a.seatNumber - b.seatNumber);
+  return activeSessionPlayers(players).sort((a, b) => a.seatNumber - b.seatNumber);
 }
 
 export function seatPlayerMap(players: SessionPlayer[]) {
-  return new Map(players.map((player) => [player.seatNumber, player]));
+  return new Map(activeSessionPlayers(players).map((player) => [player.seatNumber, player]));
 }
 
 export function nextOccupiedSeat(players: SessionPlayer[], fromSeat: number, step = 1) {
@@ -53,6 +67,56 @@ export function deriveButtonBlindSeats(players: SessionPlayer[], buttonSeat?: nu
   const sbSeat = nextOccupiedSeat(players, buttonSeat);
   const bbSeat = sbSeat ? nextOccupiedSeat(players, sbSeat) : undefined;
   return { buttonSeat, sbSeat, bbSeat };
+}
+
+export function clockwisePlayersFrom(players: SessionPlayer[], fromSeat: number, includeFromSeat = false) {
+  const bySeat = seatPlayerMap(players);
+  const ordered: SessionPlayer[] = [];
+  let seat = fromSeat;
+  for (let i = 0; i < 9; i += 1) {
+    if (i > 0 || !includeFromSeat) seat = ((seat - 1 + 1) % 9) + 1;
+    const player = bySeat.get(seat);
+    if (player) ordered.push(player);
+  }
+  return ordered;
+}
+
+export function derivePositionsByButton(players: SessionPlayer[], buttonSeat: number) {
+  const active = occupiedSeatPlayers(players);
+  const positions = POSITIONS_BY_PLAYERS[active.length];
+  const result = new Map<string, Position>();
+  const buttonPlayer = active.find((player) => player.seatNumber === buttonSeat);
+  if (!positions || !buttonPlayer) return result;
+
+  result.set(buttonPlayer.id, "BTN");
+  const afterButton = clockwisePlayersFrom(active, buttonSeat);
+  const remainingPositions = positions.filter((position) => !["BTN", "SB", "BB"].includes(position));
+  afterButton.forEach((player, index) => {
+    const position = index === 0 ? "SB" : index === 1 ? "BB" : remainingPositions[index - 2];
+    if (position) result.set(player.id, position);
+  });
+  return result;
+}
+
+export function positionedPlayers(players: SessionPlayer[], buttonSeat: number) {
+  const active = occupiedSeatPlayers(players);
+  const positions = POSITIONS_BY_PLAYERS[active.length] || [];
+  const positionMap = derivePositionsByButton(active, buttonSeat);
+  return [...active].sort((a, b) => {
+    const aIndex = positions.indexOf(positionMap.get(a.id) as Position);
+    const bIndex = positions.indexOf(positionMap.get(b.id) as Position);
+    return (aIndex === -1 ? 99 : aIndex) - (bIndex === -1 ? 99 : bIndex);
+  });
+}
+
+export function orderedPreflopPlayers(players: SessionPlayer[], buttonSeat: number) {
+  const { bbSeat } = deriveButtonBlindSeats(players, buttonSeat);
+  if (!bbSeat) return [];
+  return clockwisePlayersFrom(players, bbSeat);
+}
+
+export function orderedPostflopPlayers(players: SessionPlayer[], buttonSeat: number) {
+  return clockwisePlayersFrom(players, buttonSeat);
 }
 
 export function orderedActionSeats(players: SessionPlayer[], buttonSeat: number, street: Street) {

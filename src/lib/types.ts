@@ -110,6 +110,10 @@ export type SessionPlayer = {
   displayName: string;
   seatNumber: number;
   isHero: boolean;
+  isActive?: boolean;
+  joinedAtGameNumber?: number;
+  leftAtGameNumber?: number;
+  leftAt?: string;
   sessionNotes?: string;
   sessionTendencies: PlayerTendencies;
   seatHistory: SeatHistory[];

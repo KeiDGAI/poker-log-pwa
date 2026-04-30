@@ -8,6 +8,7 @@ import {
   Copy,
   FileText,
   Home,
+  Layers,
   Plus,
   Save,
   Search,
@@ -21,14 +22,20 @@ import { COUNTRIES, RANKS, SUITS, TENDENCY_LABELS, TENDENCY_OPTIONS } from "@/li
 import { db, nowIso, seedDefaults, uid } from "@/lib/db";
 import {
   amountToBb,
+  activeSessionPlayers,
   deriveButtonBlindSeats,
+  derivePositionsByButton,
   estimatePot,
   estimateRake,
   formatAmount,
   formatBb,
   orderedActionSeats,
+  orderedPostflopPlayers,
+  orderedPreflopPlayers,
   parseAmount,
   participantLabel,
+  positionedPlayers,
+  POSITIONS_BY_PLAYERS,
   seatPlayerMap,
   summarizePlayerStats,
 } from "@/lib/poker";
@@ -51,10 +58,9 @@ import type {
   Venue,
 } from "@/lib/types";
 
-type View = "home" | "session" | "table" | "game" | "export" | "history";
+type View = "home" | "session" | "table" | "game" | "export" | "history" | "game-history";
 type SheetMode = "player" | "tendency" | "amount" | "card" | "rake" | null;
 type GameStep = "button" | "preflop" | "flop-card" | "flop" | "turn-card" | "turn" | "river-card" | "river" | "showdown" | "result";
-type QuickAction = "open" | "check" | "call" | "bet" | "raise" | "fold" | "allin";
 
 const SEATS = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 const seatPositions: Record<number, string> = {
@@ -85,16 +91,6 @@ const actionLabels: Record<ActionType, string> = {
   call: "コール",
   bet_raise: "レイズ",
   allin: "オールイン",
-};
-
-const quickActionLabels: Record<QuickAction, string> = {
-  open: "open",
-  check: "check",
-  call: "call",
-  bet: "bet",
-  raise: "raise",
-  fold: "fold",
-  allin: "all-in",
 };
 
 const nextStep: Partial<Record<GameStep, GameStep>> = {
@@ -154,10 +150,11 @@ export function PokerLogApp() {
   }, []);
 
   const activeSession = sessions.find((session) => session.id === activeSessionId) || sessions[0];
-  const activePlayers = useMemo(
+  const sessionRoster = useMemo(
     () => sessionPlayers.filter((player) => player.sessionId === activeSession?.id).sort((a, b) => a.seatNumber - b.seatNumber),
     [activeSession?.id, sessionPlayers]
   );
+  const activePlayers = useMemo(() => activeSessionPlayers(sessionRoster), [sessionRoster]);
   const activeGames = useMemo(
     () => hands.filter((hand) => hand.sessionId === activeSession?.id).sort((a, b) => a.handNumber - b.handNumber),
     [activeSession?.id, hands]
@@ -203,10 +200,12 @@ export function PokerLogApp() {
           <TableScreen
             session={activeSession}
             players={activePlayers}
+            roster={sessionRoster}
             games={activeGames}
             playerProfiles={playerProfiles}
             onRefresh={refresh}
             onGame={() => setView("game")}
+            onGameHistory={() => setView("game-history")}
             onHome={() => setView("home")}
           />
         )}
@@ -218,6 +217,9 @@ export function PokerLogApp() {
         )}
         {view === "export" && activeSession && (
           <ExportPanel session={activeSession} players={activePlayers} games={activeGames} onDone={refresh} />
+        )}
+        {view === "game-history" && activeSession && (
+          <GameHistoryScreen session={activeSession} games={activeGames} onBack={() => setView("table")} />
         )}
         {view === "history" && (
           <HistoryPanel
@@ -414,6 +416,8 @@ function SessionForm({
       displayName: profile.heroName,
       seatNumber: 1,
       isHero: true,
+      isActive: true,
+      joinedAtGameNumber: 1,
       sessionTendencies: {},
       seatHistory: [{ id: uid(), seatNumber: 1, isCurrent: true }],
       createdAt: time,
@@ -509,18 +513,22 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function TableScreen({
   session,
   players,
+  roster,
   games,
   playerProfiles,
   onRefresh,
   onGame,
+  onGameHistory,
   onHome,
 }: {
   session: Session;
   players: SessionPlayer[];
+  roster: SessionPlayer[];
   games: Hand[];
   playerProfiles: PlayerProfile[];
   onRefresh: () => void;
   onGame: () => void;
+  onGameHistory: () => void;
   onHome: () => void;
 }) {
   const [selectedSeat, setSelectedSeat] = useState<number | null>(null);
@@ -544,8 +552,9 @@ function TableScreen({
           onTendency={(player) => setTendencyPlayer(player)}
         />
       </section>
-      <nav className="grid grid-cols-3 gap-2">
+      <nav className="grid grid-cols-4 gap-2">
         <button type="button" onClick={onHome} className="bottom-btn bg-white text-stone-900"><Home size={17} />ホーム</button>
+        <button type="button" onClick={onGameHistory} className="bottom-btn bg-white text-stone-900"><Layers size={17} />履歴</button>
         <button type="button" onClick={() => setSelectedSeat(firstEmptySeat(players))} className="bottom-btn bg-white text-stone-900"><UserPlus size={17} />プレイヤー</button>
         <button type="button" onClick={onGame} className="bottom-btn bg-emerald-800 text-white"><Plus size={17} />ゲーム追加</button>
       </nav>
@@ -554,6 +563,8 @@ function TableScreen({
           session={session}
           seat={selectedSeat}
           players={players}
+          roster={roster}
+          nextGameNumber={games.length + 1}
           playerProfiles={playerProfiles}
           onClose={() => setSelectedSeat(null)}
           onDone={async () => {
@@ -652,6 +663,8 @@ function PlayerSheet({
   session,
   seat,
   players,
+  roster,
+  nextGameNumber,
   playerProfiles,
   onClose,
   onDone,
@@ -659,13 +672,15 @@ function PlayerSheet({
   session: Session;
   seat: number;
   players: SessionPlayer[];
+  roster: SessionPlayer[];
+  nextGameNumber: number;
   playerProfiles: PlayerProfile[];
   onClose: () => void;
   onDone: () => void;
 }) {
   const existing = players.find((player) => player.seatNumber === seat);
   const [selectedSeat, setSelectedSeat] = useState(String(seat));
-  const [mode, setMode] = useState<"new" | "past">(existing?.playerProfileId ? "past" : "new");
+  const [mode, setMode] = useState<"edit" | "new" | "past">(existing ? "edit" : "new");
   const [nickname, setNickname] = useState(existing?.displayName || "");
   const [query, setQuery] = useState("");
   const [selectedProfileId, setSelectedProfileId] = useState(existing?.playerProfileId || "");
@@ -683,14 +698,23 @@ function PlayerSheet({
     const finalName = mode === "past" ? selectedProfile?.nickname || "" : nickname.trim();
     if (!finalName) return setError(mode === "past" ? "過去プレイヤーを選択してください。" : "ニックネームを入力してください。");
     if (usedSeats.has(nextSeat)) return setError("そのSeatは使用中です。");
-    if (players.some((player) => player.id !== existing?.id && player.displayName === finalName)) return setError("このセッション内で同じ名前は使えません。");
+    if (roster.some((player) => player.id !== existing?.id && player.displayName === finalName)) return setError("このセッション内で同じ名前は使えません。");
 
     let profile = selectedProfile;
     const exactProfile = playerProfiles.find((item) => item.nickname === finalName);
-    if (!profile && exactProfile) return setError("同じ名前の過去プレイヤーがあります。検索結果から選択してください。");
+    if (mode !== "edit" && !profile && exactProfile) return setError("同じ名前の過去プレイヤーがあります。検索結果から選択してください。");
+    if (mode === "edit" && exactProfile && exactProfile.id !== existing?.playerProfileId) return setError("同じ名前の別プレイヤーが登録済みです。");
     if (!profile) {
-      profile = { id: uid(), nickname: finalName, aliases: [], tendencies: {}, createdAt: time, updatedAt: time };
-      await db.playerProfiles.add(profile);
+      if (existing?.playerProfileId) {
+        profile = playerProfiles.find((item) => item.id === existing.playerProfileId);
+        if (profile) await db.playerProfiles.update(profile.id, { nickname: finalName, updatedAt: time });
+      }
+      if (!profile) {
+        profile = { id: uid(), nickname: finalName, aliases: [], tendencies: {}, createdAt: time, updatedAt: time };
+        await db.playerProfiles.add(profile);
+      }
+    } else if (mode === "edit" && profile.nickname !== finalName) {
+      await db.playerProfiles.update(profile.id, { nickname: finalName, updatedAt: time });
     }
 
     if (existing) {
@@ -704,6 +728,7 @@ function PlayerSheet({
         playerProfileId: profile.id,
         displayName: finalName,
         seatNumber: nextSeat,
+        isActive: true,
         sessionNotes: notes,
         seatHistory: history,
         updatedAt: time,
@@ -716,6 +741,8 @@ function PlayerSheet({
         displayName: finalName,
         seatNumber: nextSeat,
         isHero: false,
+        isActive: true,
+        joinedAtGameNumber: nextGameNumber,
         sessionNotes: notes,
         sessionTendencies: {},
         seatHistory: [{ id: uid(), seatNumber: nextSeat, isCurrent: true }],
@@ -723,6 +750,19 @@ function PlayerSheet({
         updatedAt: time,
       });
     }
+    onDone();
+  }
+
+  async function leaveSeat() {
+    if (!existing || existing.isHero) return;
+    const time = nowIso();
+    await db.sessionPlayers.update(existing.id, {
+      isActive: false,
+      leftAtGameNumber: nextGameNumber,
+      leftAt: time,
+      updatedAt: time,
+      seatHistory: existing.seatHistory.map((item) => item.isCurrent ? { ...item, isCurrent: false, endedAtHandNumber: nextGameNumber } : item),
+    });
     onDone();
   }
 
@@ -736,23 +776,25 @@ function PlayerSheet({
             </button>
           ))}
         </div>
-        <div className="grid grid-cols-2 gap-2">
-          <button type="button" onClick={() => {
-            setMode("new");
-            setSelectedProfileId("");
-            setError("");
-          }} className={`h-10 rounded-md border text-sm font-black ${mode === "new" ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
-            新規登録
-          </button>
-          <button type="button" onClick={() => {
-            setMode("past");
-            setError("");
-          }} className={`h-10 rounded-md border text-sm font-black ${mode === "past" ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
-            過去から検索
-          </button>
-        </div>
-        {mode === "new" ? (
-          <Field label="ニックネーム">
+        {!existing && (
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={() => {
+              setMode("new");
+              setSelectedProfileId("");
+              setError("");
+            }} className={`h-10 rounded-md border text-sm font-black ${mode === "new" ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
+              新規登録
+            </button>
+            <button type="button" onClick={() => {
+              setMode("past");
+              setError("");
+            }} className={`h-10 rounded-md border text-sm font-black ${mode === "past" ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
+              過去から検索
+            </button>
+          </div>
+        )}
+        {mode === "new" || mode === "edit" ? (
+          <Field label={mode === "edit" ? "ニックネーム変更" : "ニックネーム"}>
             <input value={nickname} onChange={(event) => {
               setNickname(event.target.value);
               setError("");
@@ -785,7 +827,12 @@ function PlayerSheet({
         )}
         <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="セッション内メモ" className="h-20 resize-none rounded-md border border-stone-300 p-2 text-sm" />
         {error && <div className="rounded-md bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</div>}
-        <button type="button" onClick={save} className="h-11 rounded-md bg-emerald-800 font-black text-white">保存</button>
+        <div className={`grid gap-2 ${existing && !existing.isHero ? "grid-cols-2" : "grid-cols-1"}`}>
+          <button type="button" onClick={save} className="h-11 rounded-md bg-emerald-800 font-black text-white">{existing ? "変更を保存" : "保存"}</button>
+          {existing && !existing.isHero && (
+            <button type="button" onClick={leaveSeat} className="h-11 rounded-md border border-red-200 bg-red-50 font-black text-red-700">離席</button>
+          )}
+        </div>
       </div>
     </BottomSheet>
   );
@@ -1087,12 +1134,10 @@ function GameControlBar({
 }
 
 function SimpleGameInput({ session, players, games, onDone }: { session: Session; players: SessionPlayer[]; games: Hand[]; onDone: () => void }) {
-  const [buttonSeat, setButtonSeat] = useState(players[0]?.seatNumber || 1);
+  const activePlayers = activeSessionPlayers(players);
+  const [buttonSeat, setButtonSeat] = useState(activePlayers[0]?.seatNumber || 1);
   const [activeStreet, setActiveStreet] = useState<Street>("preflop");
-  const [selectedPlayerId, setSelectedPlayerId] = useState(players[0]?.id || "");
-  const [selectedAction, setSelectedAction] = useState<QuickAction>("call");
-  const [amountValue, setAmountValue] = useState("");
-  const [streetText, setStreetText] = useState<Record<Street, string>>({ preflop: "", flop: "", turn: "", river: "", showdown: "" });
+  const [actionTarget, setActionTarget] = useState<{ playerId: string; street: Street } | null>(null);
   const [actions, setActions] = useState<HandAction[]>([]);
   const [flop, setFlop] = useState<string[]>([]);
   const [turn, setTurn] = useState<string[]>([]);
@@ -1100,62 +1145,59 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   const [potByStreet, setPotByStreet] = useState<Record<Street, string>>({ preflop: "", flop: "", turn: "", river: "", showdown: "" });
   const [showdownStatus, setShowdownStatus] = useState<Record<string, ShowdownStatus>>({});
   const [showdownCards, setShowdownCards] = useState<Record<string, string[]>>({});
+  const [resultByPlayer, setResultByPlayer] = useState<Record<string, string>>({});
   const [cardTarget, setCardTarget] = useState<{ label: string; max: number; cards: string[]; setCards: (cards: string[]) => void } | null>(null);
   const [showdownOpen, setShowdownOpen] = useState(false);
   const [resultText, setResultText] = useState("");
   const [movedBb, setMovedBb] = useState("");
   const [memo, setMemo] = useState("");
 
-  const selectedPlayer = players.find((player) => player.id === selectedPlayerId);
-  const blinds = deriveButtonBlindSeats(players, buttonSeat);
+  const positionMap = derivePositionsByButton(activePlayers, buttonSeat);
+  const orderedPlayers = positionedPlayers(activePlayers, buttonSeat);
+  const blinds = deriveButtonBlindSeats(activePlayers, buttonSeat);
+  const preflopOrder = orderedPreflopPlayers(activePlayers, buttonSeat);
+  const bbPlayerId = activePlayers.find((player) => player.seatNumber === blinds.bbSeat)?.id;
   const usedCards = [...flop, ...turn, ...river, ...Object.values(showdownCards).flat()];
 
-  function playerToken(player: SessionPlayer) {
-    if (blinds.buttonSeat === player.seatNumber) return "BTN";
-    if (blinds.sbSeat === player.seatNumber) return "SB";
-    if (blinds.bbSeat === player.seatNumber) return player.isHero ? "Hero BB" : "BB";
-    return player.isHero ? "Hero" : `Seat${player.seatNumber}`;
+  function visibleActions(street: Street) {
+    const explicit = actions.filter((action) => action.street === street);
+    if (street !== "preflop") return explicit;
+    const acted = new Set(explicit.map((action) => action.actorSessionPlayerId));
+    const defaults: HandAction[] = preflopOrder
+      .filter((player) => player.id !== bbPlayerId && !acted.has(player.id))
+      .map((player, index) => ({
+        id: `default-${player.id}`,
+        street: "preflop",
+        actorSessionPlayerId: player.id,
+        actionType: "fold",
+        note: "Fold",
+        order: index,
+      }));
+    return [...defaults, ...explicit].sort((a, b) => a.order - b.order);
   }
 
-  function appendAction() {
-    if (!selectedPlayer) return;
-    const amount = parseAmount(amountValue, session.amountInputUnit);
-    const amountToken = amountValue.trim() ? ` ${amountValue.trim()}` : "";
-    const text = `${playerToken(selectedPlayer)} ${quickActionLabels[selectedAction]}${amountToken}`;
-    const mapped: Record<QuickAction, ActionType> = {
-      open: "bet_raise",
-      check: "check",
-      call: "call",
-      bet: "bet_raise",
-      raise: "bet_raise",
-      fold: "fold",
-      allin: "allin",
-    };
-    setStreetText((current) => ({
-      ...current,
-      [activeStreet]: current[activeStreet] ? `${current[activeStreet]} / ${text}` : text,
-    }));
+  function addAction(player: SessionPlayer, actionType: ActionType, amountInput = "") {
+    const amount = ["bet_raise", "allin", "call"].includes(actionType) ? parseAmount(amountInput, session.amountInputUnit) : undefined;
+    const position = positionMap.get(player.id);
+    const text = `${position || `Seat${player.seatNumber}`} ${player.displayName} ${actionLabels[actionType]}${amountInput.trim() ? ` ${amountInput.trim()}` : ""}`;
     setActions((current) => [
       ...current,
       {
         id: uid(),
         street: activeStreet,
-        actorSessionPlayerId: selectedPlayer.id,
-        actionType: mapped[selectedAction],
+        actorSessionPlayerId: player.id,
+        actionType,
         amount,
         note: text,
         order: current.length + 1,
       },
     ]);
-    setAmountValue("");
+    setActionTarget(null);
   }
 
-  function undoStreet() {
-    const parts = streetText[activeStreet].split(" / ").filter(Boolean);
-    parts.pop();
-    setStreetText((current) => ({ ...current, [activeStreet]: parts.join(" / ") }));
+  function undoLastAction(street: Street) {
     setActions((current) => {
-      const indexFromEnd = [...current].reverse().findIndex((action) => action.street === activeStreet);
+      const indexFromEnd = [...current].reverse().findIndex((action) => action.street === street);
       if (indexFromEnd === -1) return current;
       const removeAt = current.length - 1 - indexFromEnd;
       return current.filter((_, index) => index !== removeAt);
@@ -1164,28 +1206,38 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
 
   async function saveGame() {
     const time = nowIso();
-    const participants: HandParticipant[] = players.map((player) => {
-      const position = blinds.buttonSeat === player.seatNumber ? "BTN" : blinds.sbSeat === player.seatNumber ? "SB" : blinds.bbSeat === player.seatNumber ? "BB" : undefined;
+    const finalActions = [
+      ...visibleActions("preflop"),
+      ...actions.filter((action) => action.street !== "preflop"),
+    ].map((action, index) => ({
+      ...action,
+      id: action.id.startsWith("default-") ? uid() : action.id,
+      order: index + 1,
+    }));
+    const participants: HandParticipant[] = orderedPlayers.map((player) => {
+      const resultBb = Number(resultByPlayer[player.id]);
       return {
         id: uid(),
         sessionPlayerId: player.id,
         displayName: player.displayName,
         isHero: player.isHero,
         seatNumber: player.seatNumber,
-        position: position as Position | undefined,
+        position: positionMap.get(player.id),
         holeCards: showdownCards[player.id] || [],
+        foldedStreet: foldedStreet(player.id, finalActions),
         showdownStatus: showdownStatus[player.id] || "unknown",
         showdownCards: showdownCards[player.id] || [],
+        resultAmount: Number.isFinite(resultBb) ? resultBb * session.bigBlindAmount : undefined,
       };
     });
-    const potAmount = estimatePot(actions);
+    const potAmount = estimatePot(finalActions);
     await db.hands.add({
       id: uid(),
       sessionId: session.id,
       handNumber: games.length + 1,
       participants,
       board: { flop, turn: turn[0], river: river[0] },
-      actions,
+      actions: finalActions,
       potAmount,
       rakeAmount: estimateRake(potAmount, session),
       resultText,
@@ -1204,90 +1256,122 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   }
 
   if (session.syncStatus === "synced_readonly") return <ReadonlyNotice />;
+  if (activePlayers.length < 3 || activePlayers.length > 9) {
+    return (
+      <section className="grid h-full place-items-center py-3">
+        <div className="rounded-lg border border-stone-200 bg-white p-5 text-center shadow-sm">
+          <h2 className="text-lg font-black">ゲーム入力は3〜9人で使えます</h2>
+          <p className="mt-2 text-sm text-stone-600">現在の有効プレイヤーは{activePlayers.length}人です。卓でプレイヤーを追加してください。</p>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <div className="grid h-full grid-rows-[auto_1fr_auto] gap-2 py-2">
       <div className="grid grid-cols-[1fr_auto] gap-2">
-        <div className="rounded-lg border border-stone-200 bg-white p-3 shadow-sm">
-          <div className="text-xs font-black text-stone-500">Game {games.length + 1}</div>
-          <div className="truncate text-sm font-black">状況: {players.find((player) => player.seatNumber === buttonSeat)?.displayName || `Seat${buttonSeat}`} BTN / Board {[...flop, ...turn, ...river].join(" ") || "-"}</div>
+        <div className="rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
+          <div className="text-xs font-black text-slate-400">Game {games.length + 1}</div>
+          <div className="truncate text-sm font-black">
+            BTN: Seat{buttonSeat} / {POSITIONS_BY_PLAYERS[activePlayers.length]?.join(" ")}
+          </div>
         </div>
-        <button type="button" onClick={saveGame} className="rounded-lg bg-emerald-800 px-4 text-sm font-black text-white">保存</button>
+        <button type="button" onClick={saveGame} className="rounded-lg bg-emerald-700 px-4 text-sm font-black text-white">保存</button>
       </div>
 
-      <section className="grid min-h-0 grid-cols-1 gap-2 md:grid-cols-[270px_1fr]">
-        <div className="min-h-0 rounded-lg border border-stone-200 bg-white p-2 shadow-sm">
+      <section className="grid min-h-0 grid-cols-1 gap-2 md:grid-cols-[360px_1fr]">
+        <div className="min-h-0 overflow-hidden rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
           <div className="mb-2 grid grid-cols-3 gap-1">
-            {players.map((player) => (
-              <button key={player.id} type="button" onClick={() => setButtonSeat(player.seatNumber)} className={`h-9 rounded-md border text-xs font-black ${buttonSeat === player.seatNumber ? "border-stone-900 bg-stone-900 text-white" : "border-stone-200 bg-white"}`}>
-                {player.seatNumber} BTN
+            {activePlayers.map((player) => (
+              <button key={player.id} type="button" onClick={() => setButtonSeat(player.seatNumber)} className={`h-8 rounded-md border text-xs font-black ${buttonSeat === player.seatNumber ? "border-emerald-400 bg-emerald-500/25 text-emerald-100" : "border-slate-700 bg-slate-800 text-slate-300"}`}>
+                Seat{player.seatNumber} BTN
               </button>
             ))}
           </div>
-          <div className="grid grid-cols-3 gap-1">
-            {players.map((player) => (
-              <button key={player.id} type="button" onClick={() => setSelectedPlayerId(player.id)} className={`min-h-12 rounded-md border p-1 text-left text-xs font-black ${selectedPlayerId === player.id ? "border-amber-400 bg-amber-100 text-stone-950" : "border-stone-200 bg-white"}`}>
-                <span className="block">Seat{player.seatNumber}</span>
-                <span className="block truncate">{player.isHero ? "Hero" : player.displayName}</span>
-              </button>
-            ))}
-          </div>
-          <div className="mt-2 grid grid-cols-4 gap-1">
-            {(["preflop", "flop", "turn", "river"] as Street[]).map((street) => (
-              <button key={street} type="button" onClick={() => setActiveStreet(street)} className={`h-9 rounded-md border text-[11px] font-black ${activeStreet === street ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
-                {streetLabels[street]}
-              </button>
+          <div className="min-h-0 overflow-auto pr-1">
+            {orderedPlayers.map((player) => (
+              <div key={player.id} className="mb-1 grid grid-cols-[46px_1fr_auto] items-center gap-2 rounded-md bg-slate-800/90 p-2">
+                <span className="rounded bg-slate-600 px-2 py-1 text-center text-xs font-black">{positionMap.get(player.id) || "-"}</span>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-black">{player.displayName}{player.isHero ? " / Hero" : ""}</div>
+                  <div className="text-[11px] text-slate-400">Seat{player.seatNumber}</div>
+                </div>
+                <div className="flex items-center gap-1">
+                  <button type="button" onClick={() => setCardTarget({ label: `${player.displayName} ホールカード`, max: 2, cards: showdownCards[player.id] || [], setCards: (cards) => setShowdownCards((current) => ({ ...current, [player.id]: cards })) })} className="flex gap-1">
+                    <MiniCard card={showdownCards[player.id]?.[0]} />
+                    <MiniCard card={showdownCards[player.id]?.[1]} />
+                  </button>
+                  <input value={resultByPlayer[player.id] || ""} onChange={(event) => setResultByPlayer((current) => ({ ...current, [player.id]: event.target.value }))} placeholder="±bb" inputMode="decimal" className="h-8 w-14 rounded border border-slate-600 bg-slate-950 px-1 text-right text-xs font-black text-slate-100" />
+                </div>
+              </div>
             ))}
           </div>
         </div>
 
-        <div className="grid min-h-0 grid-rows-[auto_1fr] gap-2">
-          <div className="rounded-lg border border-stone-200 bg-white p-2 shadow-sm">
-            <div className="grid grid-cols-7 gap-1">
-              {(Object.keys(quickActionLabels) as QuickAction[]).map((action) => (
-                <button key={action} type="button" onClick={() => setSelectedAction(action)} className={`h-9 rounded-md border text-[11px] font-black ${selectedAction === action ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
-                  {quickActionLabels[action]}
-                </button>
-              ))}
-            </div>
-            <div className="mt-2 grid grid-cols-[1fr_auto_auto] gap-2">
-              <input value={amountValue} onChange={(event) => setAmountValue(event.target.value)} inputMode="decimal" placeholder="額 例: 6, 9, 50" className="input" />
-              <button type="button" onClick={appendAction} className="h-10 rounded-md bg-emerald-800 px-4 text-sm font-black text-white">追加</button>
-              <button type="button" onClick={undoStreet} className="h-10 rounded-md border border-stone-200 bg-white px-3 text-sm font-black">戻す</button>
+        <div className="grid min-h-0 grid-rows-[auto_1fr_auto] gap-2">
+          <div className="rounded-lg border border-slate-700 bg-slate-900 p-2 text-slate-100 shadow-sm">
+            <div className="grid grid-cols-[1fr_74px_74px] gap-2">
+              <BoardCardGroup label="Flop" cards={flop} max={3} pot={potByStreet.flop} onPot={(value) => setPotByStreet((current) => ({ ...current, flop: value }))} onCard={() => setCardTarget({ label: "フロップ", max: 3, cards: flop, setCards: setFlop })} />
+              <BoardCardGroup label="Turn" cards={turn} max={1} pot={potByStreet.turn} onPot={(value) => setPotByStreet((current) => ({ ...current, turn: value }))} onCard={() => setCardTarget({ label: "ターン", max: 1, cards: turn, setCards: setTurn })} />
+              <BoardCardGroup label="River" cards={river} max={1} pot={potByStreet.river} onPot={(value) => setPotByStreet((current) => ({ ...current, river: value }))} onCard={() => setCardTarget({ label: "リバー", max: 1, cards: river, setCards: setRiver })} />
             </div>
           </div>
 
-          <div className="min-h-0 rounded-lg border border-stone-200 bg-white p-3 shadow-sm">
-            <div className="grid h-full grid-rows-[auto_1fr_auto] gap-2">
-              <div className="grid grid-cols-3 gap-2">
-                <CardStreetButton label="フロップ" cards={flop} pot={potByStreet.flop} onPot={(value) => setPotByStreet((current) => ({ ...current, flop: value }))} onCard={() => setCardTarget({ label: "フロップ", max: 3, cards: flop, setCards: setFlop })} />
-                <CardStreetButton label="ターン" cards={turn} pot={potByStreet.turn} onPot={(value) => setPotByStreet((current) => ({ ...current, turn: value }))} onCard={() => setCardTarget({ label: "ターン", max: 1, cards: turn, setCards: setTurn })} />
-                <CardStreetButton label="リバー" cards={river} pot={potByStreet.river} onPot={(value) => setPotByStreet((current) => ({ ...current, river: value }))} onCard={() => setCardTarget({ label: "リバー", max: 1, cards: river, setCards: setRiver })} />
-              </div>
-              <div className="min-h-0 overflow-auto rounded-md bg-stone-50 p-3 font-mono text-xs leading-6">
-                <NotationLine title="状況" text={`${players.find((player) => player.seatNumber === buttonSeat)?.displayName || `Seat${buttonSeat}`} BTN${showdownSummary(players, showdownCards)}`} />
-                <NotationLine title="プリフロップ" text={streetText.preflop} />
-                <NotationLine title={`フロップ ${flop.join(" ")} ${potByStreet.flop}`} text={streetText.flop} />
-                <NotationLine title={`ターン ${turn.join(" ")} ${potByStreet.turn}`} text={streetText.turn} />
-                <NotationLine title={`リバー ${river.join(" ")} ${potByStreet.river}`} text={streetText.river} />
-              </div>
-              <div className="grid grid-cols-3 gap-2">
-                <button type="button" onClick={() => setShowdownOpen(true)} className="h-10 rounded-md border border-stone-200 bg-white text-sm font-black">Showdown</button>
-                <input value={movedBb} onChange={(event) => setMovedBb(event.target.value)} inputMode="decimal" placeholder="動いたBB" className="input" />
-                <input value={resultText} onChange={(event) => setResultText(event.target.value)} placeholder="結果" className="input" />
-              </div>
-            </div>
+          <div className="min-h-0 overflow-auto rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
+            {(["preflop", "flop", "turn", "river"] as Street[]).map((street) => {
+              const rows = street === "preflop" ? preflopOrder : orderedPostflopPlayers(activePlayers, buttonSeat).filter((player) => !hasFolded(player.id, actions));
+              return (
+                <section key={street} className="border-b border-slate-700 py-2 last:border-0">
+                  <div className="mb-2 flex items-center justify-between">
+                    <button type="button" onClick={() => setActiveStreet(street)} className={`text-left text-lg font-black ${activeStreet === street ? "text-emerald-300" : "text-slate-200"}`}>{streetLabels[street]} {street !== "preflop" && <span className="text-sm text-slate-400">{potByStreet[street] && `${potByStreet[street]}bb`}</span>}</button>
+                    <button type="button" onClick={() => undoLastAction(street)} className="text-xs font-bold text-slate-400">戻す</button>
+                  </div>
+                  <div className="grid gap-1">
+                    {rows.map((player) => {
+                      const playerActions = visibleActions(street).filter((action) => action.actorSessionPlayerId === player.id);
+                      const latest = playerActions.at(-1);
+                      const isCurrent = actionTarget?.playerId === player.id && actionTarget.street === street;
+                      return (
+                        <button key={`${street}-${player.id}`} type="button" onClick={() => {
+                          setActiveStreet(street);
+                          setActionTarget({ playerId: player.id, street });
+                        }} className={`grid grid-cols-[48px_1fr_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left ${isCurrent ? "bg-amber-300 text-slate-950" : "bg-slate-800 text-slate-100"}`}>
+                          <span className="rounded bg-slate-600 px-2 py-1 text-center text-xs font-black text-white">{positionMap.get(player.id) || "-"}</span>
+                          <span className="truncate text-sm font-black">{player.displayName}</span>
+                          <span className={`text-sm font-black ${actionColor(latest?.actionType)}`}>{latest ? actionDisplay(latest, session) : player.id === bbPlayerId && street === "preflop" ? "" : "Fold"}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+
+          <div className="grid grid-cols-4 gap-2">
+            <button type="button" onClick={() => setShowdownOpen(true)} className="h-10 rounded-md border border-slate-300 bg-white text-sm font-black">Showdown</button>
+            <input value={movedBb} onChange={(event) => setMovedBb(event.target.value)} inputMode="decimal" placeholder="動いたBB" className="input" />
+            <input value={resultText} onChange={(event) => setResultText(event.target.value)} placeholder="結果" className="input" />
+            <button type="button" onClick={saveGame} className="h-10 rounded-md bg-emerald-700 text-sm font-black text-white">保存</button>
           </div>
         </div>
       </section>
 
       <textarea value={memo} onChange={(event) => setMemo(event.target.value)} placeholder="メモ" className="h-12 resize-none rounded-md border border-stone-300 bg-white p-2 text-sm shadow-sm" />
 
+      <ActionSheet
+        target={actionTarget}
+        players={activePlayers}
+        session={session}
+        onClose={() => setActionTarget(null)}
+        onAdd={addAction}
+      />
+
       <BottomSheet title="Showdown / ホールカード" open={showdownOpen} onClose={() => setShowdownOpen(false)}>
         <div className="grid max-h-[52dvh] gap-2 overflow-auto">
-          {players.map((player) => (
+          {orderedPlayers.map((player) => (
             <div key={player.id} className="rounded-md border border-stone-200 p-2">
-              <div className="mb-2 text-sm font-black">Seat{player.seatNumber} {player.isHero ? "Hero" : player.displayName}</div>
+              <div className="mb-2 text-sm font-black">Seat{player.seatNumber} {player.displayName}</div>
               <div className="grid grid-cols-4 gap-2">
                 {([
                   ["shown", "ショー"],
@@ -1314,33 +1398,85 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   );
 }
 
-function CardStreetButton({ label, cards, pot, onPot, onCard }: { label: string; cards: string[]; pot: string; onPot: (value: string) => void; onCard: () => void }) {
+function hasFolded(playerId: string, actions: HandAction[]) {
+  return actions.some((action) => action.actorSessionPlayerId === playerId && action.actionType === "fold");
+}
+
+function foldedStreet(playerId: string, actions: HandAction[]) {
+  return actions.find((action) => action.actorSessionPlayerId === playerId && action.actionType === "fold")?.street;
+}
+
+function actionColor(type?: ActionType) {
+  if (type === "fold") return "text-blue-400";
+  if (type === "bet_raise" || type === "allin") return "text-red-400";
+  if (type === "check" || type === "call") return "text-emerald-400";
+  return "text-slate-300";
+}
+
+function actionDisplay(action: HandAction, session: Session) {
+  const amount = action.amount ? ` ${formatBb(action.amount, session.bigBlindAmount)}` : "";
+  return `${actionLabels[action.actionType]}${amount}`;
+}
+
+function ActionSheet({
+  target,
+  players,
+  session,
+  onClose,
+  onAdd,
+}: {
+  target: { playerId: string; street: Street } | null;
+  players: SessionPlayer[];
+  session: Session;
+  onClose: () => void;
+  onAdd: (player: SessionPlayer, actionType: ActionType, amountInput?: string) => void;
+}) {
+  const [amount, setAmount] = useState("");
+  const player = players.find((item) => item.id === target?.playerId);
+  if (!target || !player) return null;
   return (
-    <div className="rounded-md border border-stone-200 p-2">
-      <button type="button" onClick={onCard} className="block w-full truncate text-left text-xs font-black">{label}: {cards.join(" ") || "-"}</button>
-      <input value={pot} onChange={(event) => onPot(event.target.value)} inputMode="decimal" placeholder="Pot" className="mt-1 h-8 w-full rounded border border-stone-200 px-2 text-xs" />
-    </div>
+    <BottomSheet title={`${player.displayName} ${streetLabels[target.street]}`} open onClose={onClose}>
+      <div className="grid gap-2">
+        <AmountInput label="額入力（省略可）" value={amount} session={session} onChange={setAmount} />
+        <div className="grid grid-cols-3 gap-2">
+          {([
+            ["fold", "Fold"],
+            ["check", "Check"],
+            ["call", "Call"],
+            ["bet_raise", "Bet/Raise"],
+            ["allin", "All-in"],
+          ] as [ActionType, string][]).map(([type, label]) => (
+            <button key={type} type="button" onClick={() => {
+              onAdd(player, type, amount);
+              setAmount("");
+            }} className="h-11 rounded-md border border-stone-200 bg-white text-sm font-black">
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </BottomSheet>
   );
 }
 
-function NotationLine({ title, text }: { title: string; text: string }) {
+function MiniCard({ card }: { card?: string }) {
+  if (!card) return <span className="h-8 w-7 rounded border border-slate-500 bg-slate-950" />;
+  const red = card.includes("♥") || card.includes("♦");
+  return <span className={`grid h-8 w-7 place-items-center rounded border border-white/70 text-xs font-black ${red ? "bg-red-500 text-white" : "bg-blue-600 text-white"}`}>{card}</span>;
+}
+
+function BoardCardGroup({ label, cards, max, pot, onPot, onCard }: { label: string; cards: string[]; max: number; pot: string; onPot: (value: string) => void; onCard: () => void }) {
   return (
     <div>
-      <span className="font-black">[{title}]</span>
-      {text && <div>{text}</div>}
+      <button type="button" onClick={onCard} className="flex min-h-10 w-full items-center gap-1 rounded-md bg-slate-800 p-1">
+        {Array.from({ length: max }).map((_, index) => <MiniCard key={index} card={cards[index]} />)}
+      </button>
+      <div className="mt-1 grid grid-cols-[auto_1fr] items-center gap-1 text-[10px] font-black text-slate-400">
+        <span>{label}</span>
+        <input value={pot} onChange={(event) => onPot(event.target.value)} inputMode="decimal" placeholder="Pot" className="h-6 min-w-0 rounded border border-slate-700 bg-slate-950 px-1 text-right text-xs text-slate-100" />
+      </div>
     </div>
   );
-}
-
-function showdownSummary(players: SessionPlayer[], cards: Record<string, string[]>) {
-  return players
-    .map((player) => {
-      const playerCards = cards[player.id];
-      if (!playerCards?.length) return "";
-      return ` / ${player.isHero ? "Hero" : `Seat${player.seatNumber}`} ${playerCards.join(" ")}`;
-    })
-    .filter(Boolean)
-    .join("");
 }
 
 function CardPicker({ cards, max, usedCards, onChange }: { cards: string[]; max: number; usedCards: string[]; onChange: (cards: string[]) => void }) {
@@ -1434,6 +1570,102 @@ function HistoryPanel({ sessions, onSelect }: { sessions: Session[]; onSelect: (
         ))}
       </div>
     </section>
+  );
+}
+
+function GameHistoryScreen({ session, games, onBack }: { session: Session; games: Hand[]; onBack: () => void }) {
+  const [selectedId, setSelectedId] = useState(games.at(-1)?.id || "");
+  const selected = games.find((game) => game.id === selectedId) || games.at(-1);
+
+  return (
+    <div className="grid h-full grid-rows-[auto_1fr] gap-3 py-3">
+      <div className="flex items-center justify-between rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
+        <div>
+          <div className="text-xs font-black text-slate-400">Game History</div>
+          <div className="text-lg font-black">{session.venueName} / {games.length}ゲーム</div>
+        </div>
+        <button type="button" onClick={onBack} className="h-10 rounded-md bg-white px-3 text-sm font-black text-slate-900">卓へ</button>
+      </div>
+      <section className="grid min-h-0 grid-cols-1 gap-3 md:grid-cols-[42%_1fr]">
+        <div className="min-h-0 overflow-auto rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
+          {games.length === 0 && <div className="text-sm text-slate-400">まだゲームがありません。</div>}
+          {games.slice().reverse().map((game) => {
+            const hero = game.participants.find((participant) => participant.isHero) || game.participants[0];
+            const board = [...game.board.flop, game.board.turn, game.board.river].filter(Boolean);
+            return (
+              <button key={game.id} type="button" onClick={() => setSelectedId(game.id)} className={`mb-2 block w-full rounded-md p-3 text-left ${selected?.id === game.id ? "bg-slate-700" : "bg-slate-800"}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-black">Game {game.handNumber}</span>
+                  <span className={`text-sm font-black ${(game.movedBb || 0) < 0 ? "text-red-400" : (game.movedBb || 0) > 0 ? "text-emerald-400" : "text-slate-300"}`}>
+                    {game.movedBb !== undefined ? `${game.movedBb > 0 ? "+" : ""}${game.movedBb}bb` : "±0bb"}
+                  </span>
+                </div>
+                <div className="mt-1 flex items-center gap-2 text-xs text-slate-400">
+                  <span>{new Date(game.createdAt).toLocaleString("ja-JP", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</span>
+                  <span className="rounded bg-slate-600 px-2 py-0.5 font-black text-slate-100">{hero?.position || "-"}</span>
+                  <span>{hero?.holeCards?.join(" ") || "-"}</span>
+                </div>
+                <div className="mt-2 flex gap-1">
+                  {board.length ? board.map((card) => <MiniCard key={card} card={card} />) : <span className="text-xs text-slate-500">Boardなし</span>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+        <div className="min-h-0 overflow-auto rounded-lg border border-slate-700 bg-slate-900 p-4 text-slate-100 shadow-sm">
+          {selected ? <GameHistoryDetail session={session} game={selected} /> : <div className="text-sm text-slate-400">ゲームを選択してください。</div>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function GameHistoryDetail({ session, game }: { session: Session; game: Hand }) {
+  return (
+    <div className="space-y-4">
+      <section>
+        <div className="mb-2 text-lg font-black">Game {game.handNumber}</div>
+        <div className="space-y-1">
+          {game.participants.map((participant) => (
+            <div key={participant.id} className="grid grid-cols-[48px_1fr_auto_auto] items-center gap-2 rounded-md bg-slate-800 p-2">
+              <span className="rounded bg-slate-600 px-2 py-1 text-center text-xs font-black">{participant.position || "-"}</span>
+              <span className="truncate text-sm font-black">{participant.displayName}</span>
+              <span className="flex gap-1">{participant.holeCards?.map((card) => <MiniCard key={card} card={card} />)}</span>
+              <span className={`text-sm font-black ${(participant.resultAmount || 0) < 0 ? "text-red-400" : (participant.resultAmount || 0) > 0 ? "text-emerald-400" : "text-slate-400"}`}>
+                {participant.resultAmount !== undefined ? formatBb(participant.resultAmount, session.bigBlindAmount) : "±0bb"}
+              </span>
+            </div>
+          ))}
+        </div>
+      </section>
+      {(["preflop", "flop", "turn", "river"] as Street[]).map((street) => {
+        const boardText = street === "flop" ? game.board.flop.join(" ") : street === "turn" ? game.board.turn : street === "river" ? game.board.river : "";
+        const streetActions = game.actions.filter((action) => action.street === street);
+        return (
+          <section key={street} className="border-t border-slate-700 pt-3">
+            <div className="mb-2 text-lg font-black">{streetLabels[street]} <span className="text-sm text-slate-400">{boardText}</span></div>
+            <div className="space-y-1">
+              {streetActions.length ? streetActions.map((action) => {
+                const actor = game.participants.find((participant) => participant.sessionPlayerId === action.actorSessionPlayerId);
+                return (
+                  <div key={action.id} className="grid grid-cols-[48px_1fr_auto] items-center gap-2 rounded-md bg-slate-800 p-2">
+                    <span className="rounded bg-slate-600 px-2 py-1 text-center text-xs font-black">{actor?.position || "-"}</span>
+                    <span className="truncate text-sm font-black">{actor?.displayName || "不明"}</span>
+                    <span className={`text-sm font-black ${actionColor(action.actionType)}`}>{actionDisplay(action, session)}</span>
+                  </div>
+                );
+              }) : <div className="text-sm text-slate-500">入力なし</div>}
+            </div>
+          </section>
+        );
+      })}
+      <section className="border-t border-slate-700 pt-3 text-sm text-slate-300">
+        <div className="font-black text-slate-100">Result</div>
+        <div>{game.resultText || "-"}</div>
+        <div>Pot: {formatAmount(game.potAmount, session.playUnitName)} / Rake: {formatAmount(game.rakeAmount, session.playUnitName)}</div>
+        {game.memo && <div className="mt-2 whitespace-pre-wrap text-slate-400">{game.memo}</div>}
+      </section>
+    </div>
   );
 }
 
