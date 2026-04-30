@@ -1172,8 +1172,12 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
 
   function playersForStreet(street: Street) {
     if (!canStreetStart(street)) return [];
+    return streetParticipants(street).filter((player) => !hasFoldedThroughStreet(player.id, actions, street) && !isAllInThroughStreet(player.id, actions, street));
+  }
+
+  function streetParticipants(street: Street) {
     const base = street === "preflop" ? preflopOrder : orderedPostflopPlayers(activePlayers, buttonSeat);
-    return base.filter((player) => !hasFoldedThroughStreet(player.id, actions, street) && !isAllInThroughStreet(player.id, actions, street));
+    return base.filter((player) => !hasFoldedBeforeStreet(player.id, actions, street));
   }
 
   function actionRowsForStreet(street: Street) {
@@ -1181,9 +1185,10 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
     const state = streetState(streetActions, street, session, blinds);
     const required = requiredPlayers(playersForStreet(street), streetActions, street, session, blinds);
     const currentActor = required[0];
-    return playersForStreet(street).map((player) => ({
+    return streetParticipants(street).map((player) => ({
       player,
       latest: state.latestByPlayer.get(player.id),
+      actions: visibleActions(street).filter((action) => action.actorSessionPlayerId === player.id),
       isCurrent: currentActor?.id === player.id,
       isRequired: required.some((item) => item.id === player.id),
     }));
@@ -1203,8 +1208,7 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   }
 
   function playersForStreetWithoutCompletionCheck(street: Street) {
-    const base = street === "preflop" ? preflopOrder : orderedPostflopPlayers(activePlayers, buttonSeat);
-    return base.filter((player) => !hasFoldedThroughStreet(player.id, actions, street) && !isAllInThroughStreet(player.id, actions, street));
+    return streetParticipants(street).filter((player) => !hasFoldedThroughStreet(player.id, actions, street) && !isAllInThroughStreet(player.id, actions, street));
   }
 
   function addAction(player: SessionPlayer, actionType: ActionType, amountInput = "", street = activeStreet) {
@@ -1426,7 +1430,7 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
                     <button type="button" onClick={() => undoLastAction(street)} className="text-xs font-bold text-slate-400">戻す</button>
                   </div>
                   <div className="grid gap-1">
-                    {rows.map(({ player, latest, isCurrent, isRequired }, rowIndex) => {
+                    {rows.map(({ player, latest, actions: playerStreetActions, isCurrent, isRequired }, rowIndex) => {
                       const selected = actionTarget?.playerId === player.id && actionTarget.street === street;
                       return (
                         <button key={`${street}-${player.id}-${rowIndex}`} type="button" onClick={() => {
@@ -1436,7 +1440,7 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
                         }} className={`grid grid-cols-[48px_1fr_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left ${selected || isCurrent ? "bg-amber-300 text-slate-950" : isRequired ? "bg-slate-700 text-slate-100" : "bg-slate-800 text-slate-400"}`}>
                           <span className="rounded bg-slate-600 px-2 py-1 text-center text-xs font-black text-white">{positionMap.get(player.id) || "-"}</span>
                           <span className="truncate text-sm font-black">{player.displayName}{isCurrent ? " / 入力中" : isRequired ? " / ここまでFold" : ""}</span>
-                          <span className={`text-sm font-black ${actionColor(latest?.actionType)}`}>{latest ? actionDisplay(latest, session) : isRequired ? "未対応" : "対応済"}</span>
+                          <span className={`text-sm font-black ${actionColor(latest?.actionType)}`}>{playerStreetActions.length ? playerStreetActions.map((action) => actionDisplay(action, session)).join(" / ") : isRequired ? "未対応" : "対応済"}</span>
                         </button>
                       );
                     })}

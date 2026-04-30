@@ -3,17 +3,19 @@ import test from "node:test";
 
 const order = ["UTG", "UTG1", "UTG2", "LJ", "HJ", "CO", "BTN", "SB", "BB"];
 const session = { smallBlindAmount: 50, bigBlindAmount: 100, rakePercent: 5, rakeCapBb: 3 };
+const streetOrder = ["preflop", "flop", "turn", "river"];
 
 function initState() {
   return {
+    street: "preflop",
     currentBet: session.bigBlindAmount,
     minimumRaiseIncrement: session.bigBlindAmount,
     status: Object.fromEntries(order.map((id) => [id, "ACTIVE"])),
     contribution: { SB: session.smallBlindAmount, BB: session.bigBlindAmount },
     pendingPlayers: order.filter((id) => id !== "BB"),
     actions: [
-      { playerId: "SB", actionType: "BLIND", amountChips: 50, note: "BLIND" },
-      { playerId: "BB", actionType: "BLIND", amountChips: 100, note: "BLIND" },
+      { street: "preflop", playerId: "SB", actionType: "BLIND", amountChips: 50, note: "BLIND" },
+      { street: "preflop", playerId: "BB", actionType: "BLIND", amountChips: 100, note: "BLIND" },
     ],
   };
 }
@@ -27,12 +29,14 @@ function activeAfter(actorId, state) {
 function act(state, playerId, actionType, amountChips = 0) {
   assert.equal(state.pendingPlayers[0], playerId);
   const next = structuredClone(state);
+  let loggedAmount = amountChips;
   if (actionType === "FOLD") {
     next.status[playerId] = "FOLDED";
     next.pendingPlayers = next.pendingPlayers.filter((id) => id !== playerId);
   }
   if (actionType === "CALL") {
     next.contribution[playerId] = next.currentBet;
+    loggedAmount = next.currentBet;
     next.pendingPlayers = next.pendingPlayers.filter((id) => id !== playerId);
   }
   if (actionType === "RAISE" || actionType === "BET") {
@@ -54,7 +58,7 @@ function act(state, playerId, actionType, amountChips = 0) {
       next.pendingPlayers = next.pendingPlayers.filter((id) => id !== playerId);
     }
   }
-  next.actions.push({ playerId, actionType, amountChips, note: "USER" });
+  next.actions.push({ street: next.street, playerId, actionType, amountChips: loggedAmount, note: "USER" });
   return next;
 }
 
@@ -69,6 +73,40 @@ function scenarioToBbReraise() {
   state = act(state, "SB", "FOLD");
   state = act(state, "BB", "RAISE", 900);
   return state;
+}
+
+function scenarioRequestedReraise() {
+  let state = initState();
+  state = act(state, "UTG", "FOLD");
+  state = act(state, "UTG1", "FOLD");
+  state = act(state, "UTG2", "FOLD");
+  state = act(state, "LJ", "FOLD");
+  state = act(state, "HJ", "RAISE", 900);
+  state = act(state, "CO", "FOLD");
+  state = act(state, "BTN", "CALL");
+  state = act(state, "SB", "FOLD");
+  state = act(state, "BB", "RAISE", 2000);
+  return state;
+}
+
+function playerActions(state, playerId, street = "preflop") {
+  return state.actions.filter((action) => action.street === street && action.playerId === playerId && action.note !== "BLIND");
+}
+
+function streetParticipants(state, street) {
+  const streetIndex = streetOrder.indexOf(street);
+  return order.filter((id) => !state.actions.some((action) => (
+    action.playerId === id &&
+    action.actionType === "FOLD" &&
+    streetOrder.indexOf(action.street) < streetIndex
+  )));
+}
+
+function displayForStreet(state, street) {
+  return Object.fromEntries(streetParticipants(state, street).map((id) => [
+    id,
+    playerActions(state, id, street).map((action) => `${action.actionType}${action.amountChips ? ` ${action.amountChips}` : ""}`).join(" / ") || "UNINPUT",
+  ]));
 }
 
 test("UTG Raise 300 makes every other active player pending in table order", () => {
@@ -122,4 +160,59 @@ test("street ends when pendingPlayers becomes empty", () => {
   state = act(state, "BB", "CALL");
   state = act(state, "UTG", "CALL");
   assert.deepEqual(state.pendingPlayers, []);
+});
+
+test("HJ gets next action after HJ raise, BTN call, BB raise", () => {
+  const state = scenarioRequestedReraise();
+  assert.deepEqual(state.pendingPlayers, ["HJ", "BTN"]);
+});
+
+test("HJ Call 20 appends without deleting HJ Raise 9", () => {
+  const state = act(scenarioRequestedReraise(), "HJ", "CALL");
+  assert.deepEqual(playerActions(state, "HJ").map((action) => action.actionType), ["RAISE", "CALL"]);
+});
+
+test("HJ has both HJ Raise 9 and HJ Call 20 action logs", () => {
+  const state = act(scenarioRequestedReraise(), "HJ", "CALL");
+  assert.deepEqual(playerActions(state, "HJ").map((action) => action.amountChips), [900, 2000]);
+});
+
+test("BTN second call appends without deleting first BTN call", () => {
+  let state = act(scenarioRequestedReraise(), "HJ", "CALL");
+  state = act(state, "BTN", "CALL");
+  assert.deepEqual(playerActions(state, "BTN").map((action) => action.amountChips), [900, 2000]);
+});
+
+test("folded player remains visible as Fold on same street", () => {
+  const state = scenarioRequestedReraise();
+  assert.equal(displayForStreet(state, "preflop").UTG, "FOLD");
+});
+
+test("folded player is not an action candidate on same street", () => {
+  const state = scenarioRequestedReraise();
+  assert.ok(!state.pendingPlayers.includes("UTG"));
+  assert.ok(!state.pendingPlayers.includes("CO"));
+});
+
+test("preflop folded players are hidden on flop", () => {
+  const state = scenarioRequestedReraise();
+  assert.ok(!streetParticipants(state, "flop").includes("UTG"));
+  assert.ok(!streetParticipants(state, "flop").includes("CO"));
+});
+
+test("flop folded player remains on flop display and is hidden on turn", () => {
+  let state = {
+    ...initState(),
+    street: "flop",
+    currentBet: 0,
+    contribution: {},
+    pendingPlayers: ["HJ", "BTN", "BB"],
+    actions: [],
+    status: { ...Object.fromEntries(order.map((id) => [id, "FOLDED"])), HJ: "ACTIVE", BTN: "ACTIVE", BB: "ACTIVE" },
+  };
+  state = act(state, "HJ", "BET", 900);
+  state = act(state, "BTN", "FOLD");
+  state = act(state, "BB", "CALL");
+  assert.equal(displayForStreet(state, "flop").BTN, "FOLD");
+  assert.ok(!streetParticipants(state, "turn").includes("BTN"));
 });
