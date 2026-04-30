@@ -15,7 +15,6 @@ import {
   Settings2,
   Spade,
   Trash2,
-  UserPlus,
   X,
 } from "lucide-react";
 import { COUNTRIES, RANKS, SUITS, TENDENCY_LABELS, TENDENCY_OPTIONS } from "@/lib/constants";
@@ -538,10 +537,9 @@ function TableScreen({
           onTendency={(player) => setTendencyPlayer(player)}
         />
       </section>
-      <nav className="grid grid-cols-4 gap-2">
+      <nav className="grid grid-cols-3 gap-2">
         <button type="button" onClick={onHome} className="bottom-btn bg-white text-stone-900"><Home size={17} />ホーム</button>
         <button type="button" onClick={onGameHistory} className="bottom-btn bg-white text-stone-900"><Layers size={17} />履歴</button>
-        <button type="button" onClick={() => setSelectedSeat(firstEmptySeat(players))} className="bottom-btn bg-white text-stone-900"><UserPlus size={17} />プレイヤー</button>
         <button type="button" onClick={onGame} className="bottom-btn bg-emerald-800 text-white"><Plus size={17} />ゲーム追加</button>
       </nav>
       {selectedSeat && (
@@ -596,7 +594,7 @@ function PokerTable({
   const bySeat = seatPlayerMap(players);
   const blinds = deriveButtonBlindSeats(players, buttonSeat);
   return (
-    <div className="relative mx-auto mt-2 h-[min(62dvh,520px)] min-h-[360px] max-w-[760px]">
+    <div className="relative mx-auto mt-2 h-[min(62dvh,520px)] min-h-[380px] max-w-[760px]">
       <div className="absolute left-[12%] top-[18%] h-[64%] w-[76%] rounded-[48%] border-[12px] border-emerald-950 bg-emerald-700 shadow-inner" />
       <div className="absolute left-1/2 top-1/2 w-[42%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-emerald-800/70 py-5 text-center text-white">
         <div className="text-xs font-bold">POKER TABLE</div>
@@ -611,15 +609,15 @@ function PokerTable({
             key={seat}
             type="button"
             onClick={() => onSeatClick?.(seat, player)}
-            className={`absolute ${seatPositions[seat]} w-[92px] rounded-lg border p-2 text-left shadow-sm transition ${
+            className={`absolute ${seatPositions[seat]} w-[72px] rounded-lg border p-1.5 text-left shadow-sm transition sm:w-[92px] sm:p-2 ${
               activeSeats.includes(seat) ? "border-amber-300 bg-amber-100" : player ? "border-stone-300 bg-white" : "border-stone-200 bg-white/80"
             }`}
           >
             <div className="flex items-center justify-between gap-1">
-              <span className="text-xs font-black">Seat{seat}</span>
+              <span className="text-[10px] font-black sm:text-xs">Seat{seat}</span>
               {badge && <span className="rounded bg-stone-900 px-1.5 py-0.5 text-[10px] font-black text-white">{badge}</span>}
             </div>
-            <div className="mt-1 h-5 truncate text-sm font-black">{player?.displayName || ""}</div>
+            <div className="mt-1 h-5 truncate text-xs font-black sm:text-sm">{player?.displayName || ""}</div>
             <div className="h-4 truncate text-[10px] text-stone-500">
               {actionLabelsBySeat?.[seat] || (stats ? `関与${stats.involvedHands} SD${stats.showdownsSeen}` : "")}
             </div>
@@ -639,11 +637,6 @@ function PokerTable({
       })}
     </div>
   );
-}
-
-function firstEmptySeat(players: SessionPlayer[]) {
-  const used = new Set(players.map((player) => player.seatNumber));
-  return SEATS.find((seat) => !used.has(seat)) || 1;
 }
 
 function PlayerSheet({
@@ -1147,11 +1140,10 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   const [potByStreet, setPotByStreet] = useState<Record<Street, string>>({ preflop: "", flop: "", turn: "", river: "", showdown: "" });
   const [showdownStatus, setShowdownStatus] = useState<Record<string, ShowdownStatus>>({});
   const [showdownCards, setShowdownCards] = useState<Record<string, string[]>>({});
-  const [resultByPlayer, setResultByPlayer] = useState<Record<string, string>>({});
-  const [cardTarget, setCardTarget] = useState<{ label: string; max: number; cards: string[]; setCards: (cards: string[]) => void } | null>(null);
-  const [showdownOpen, setShowdownOpen] = useState(false);
+  const [cardTarget, setCardTarget] = useState<{ label: string; max: number; cards: string[]; setCards: (cards: string[]) => void; onComplete?: () => void } | null>(null);
+  const [resultOpen, setResultOpen] = useState(false);
+  const [winnerId, setWinnerId] = useState("");
   const [resultText, setResultText] = useState("");
-  const [movedBb, setMovedBb] = useState("");
   const [memo, setMemo] = useState("");
 
   const positionMap = derivePositionsByButton(activePlayers, buttonSeat);
@@ -1160,6 +1152,14 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   const preflopOrder = orderedPreflopPlayers(activePlayers, buttonSeat);
   const bbPlayerId = activePlayers.find((player) => player.seatNumber === blinds.bbSeat)?.id;
   const usedCards = [...flop, ...turn, ...river, ...Object.values(showdownCards).flat()];
+  const livePlayers = orderedPlayers.filter((player) => !hasFoldedBeforeStreet(player.id, actions, "showdown"));
+  const currentFinalActions = [
+    ...visibleActions("preflop"),
+    ...actions.filter((action) => action.street !== "preflop"),
+  ].map((action, index) => ({ ...action, order: index + 1 }));
+  const currentPotAmount = estimatePot(currentFinalActions);
+  const currentRakeAmount = estimateRake(currentPotAmount, session);
+  const winnerAmount = Math.max(0, currentPotAmount - currentRakeAmount);
 
   function visibleActions(street: Street) {
     const explicit = actions.filter((action) => action.street === street);
@@ -1178,7 +1178,29 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
     return [...defaults, ...explicit].sort((a, b) => a.order - b.order);
   }
 
-  function addAction(player: SessionPlayer, actionType: ActionType, amountInput = "") {
+  function playersForStreet(street: Street) {
+    const base = street === "preflop" ? preflopOrder : orderedPostflopPlayers(activePlayers, buttonSeat);
+    return base.filter((player) => !hasFoldedBeforeStreet(player.id, actions, street) && !isAllInBeforeStreet(player.id, actions, street));
+  }
+
+  function actionRowsForStreet(street: Street) {
+    const base = playersForStreet(street).map((player) => ({ player, repeat: false }));
+    const streetActions = actions.filter((action) => action.street === street);
+    const latestRaise = [...streetActions].reverse().find((action) => action.actionType === "bet_raise" || action.actionType === "allin");
+    if (!latestRaise) return base;
+
+    const latestByPlayer = new Map<string, HandAction>();
+    streetActions.forEach((action) => latestByPlayer.set(action.actorSessionPlayerId, action));
+    const repeatPlayers = playersForStreet(street).filter((player) => {
+      if (player.id === latestRaise.actorSessionPlayerId) return false;
+      const latest = latestByPlayer.get(player.id);
+      if (latest?.actionType === "fold" || latest?.actionType === "allin") return false;
+      return !latest || latest.order < latestRaise.order;
+    });
+    return [...base, ...repeatPlayers.map((player) => ({ player, repeat: true }))];
+  }
+
+  function addAction(player: SessionPlayer, actionType: ActionType, amountInput = "", street = activeStreet) {
     const amount = ["bet_raise", "allin", "call"].includes(actionType) ? parseAmount(amountInput, session.amountInputUnit) : undefined;
     const position = positionMap.get(player.id);
     const text = `${position || `Seat${player.seatNumber}`} ${player.displayName} ${actionLabels[actionType]}${amountInput.trim() ? ` ${amountInput.trim()}` : ""}`;
@@ -1186,7 +1208,7 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
       ...current,
       {
         id: uid(),
-        street: activeStreet,
+        street,
         actorSessionPlayerId: player.id,
         actionType,
         amount,
@@ -1216,8 +1238,10 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
       id: action.id.startsWith("default-") ? uid() : action.id,
       order: index + 1,
     }));
+    const potAmount = estimatePot(finalActions);
+    const rakeAmount = estimateRake(potAmount, session);
+    const wonAmount = Math.max(0, potAmount - rakeAmount);
     const participants: HandParticipant[] = orderedPlayers.map((player) => {
-      const resultBb = Number(resultByPlayer[player.id]);
       return {
         id: uid(),
         sessionPlayerId: player.id,
@@ -1229,10 +1253,9 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
         foldedStreet: foldedStreet(player.id, finalActions),
         showdownStatus: showdownStatus[player.id] || "unknown",
         showdownCards: showdownCards[player.id] || [],
-        resultAmount: Number.isFinite(resultBb) ? resultBb * session.bigBlindAmount : undefined,
+        resultAmount: winnerId === player.id ? wonAmount : undefined,
       };
     });
-    const potAmount = estimatePot(finalActions);
     await db.hands.add({
       id: uid(),
       sessionId: session.id,
@@ -1241,9 +1264,9 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
       board: { flop, turn: turn[0], river: river[0] },
       actions: finalActions,
       potAmount,
-      rakeAmount: estimateRake(potAmount, session),
-      resultText,
-      movedBb: movedBb ? Number(movedBb) : undefined,
+      rakeAmount,
+      resultText: resultText || (winnerId ? `${orderedPlayers.find((player) => player.id === winnerId)?.displayName || "Winner"} won ${formatShortAmount(wonAmount, session)}` : undefined),
+      movedBb: amountToBb(wonAmount, session.bigBlindAmount),
       memo: [
         memo,
         potByStreet.flop && `Flop pot ${potByStreet.flop}`,
@@ -1270,7 +1293,8 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   }
 
   return (
-    <div className="grid h-full grid-rows-[auto_1fr_auto] gap-2 py-2">
+    <div className="h-full overflow-auto py-2">
+      <div className="grid gap-2">
       <div className="grid grid-cols-[1fr_auto] gap-2">
         <div className="rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
           <div className="text-xs font-black text-slate-400">Game {games.length + 1}</div>
@@ -1281,8 +1305,8 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
         <button type="button" onClick={saveGame} className="rounded-lg bg-emerald-700 px-4 text-sm font-black text-white">保存</button>
       </div>
 
-      <section className="grid min-h-0 grid-cols-1 gap-2 md:grid-cols-[360px_1fr]">
-        <div className="min-h-0 overflow-hidden rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
+      <section className="grid grid-cols-1 gap-2 md:grid-cols-[360px_1fr]">
+        <div className="rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
           <div className="mb-2 grid grid-cols-3 gap-1">
             {activePlayers.map((player) => (
               <button key={player.id} type="button" onClick={() => setButtonSeat(player.seatNumber)} className={`h-8 rounded-md border text-xs font-black ${buttonSeat === player.seatNumber ? "border-emerald-400 bg-emerald-500/25 text-emerald-100" : "border-slate-700 bg-slate-800 text-slate-300"}`}>
@@ -1290,7 +1314,7 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
               </button>
             ))}
           </div>
-          <div className="min-h-0 overflow-auto pr-1">
+          <div className="pr-1">
             {orderedPlayers.map((player) => (
               <div key={player.id} className="mb-1 grid grid-cols-[46px_1fr_auto] items-center gap-2 rounded-md bg-slate-800/90 p-2">
                 <span className="rounded bg-slate-600 px-2 py-1 text-center text-xs font-black">{positionMap.get(player.id) || "-"}</span>
@@ -1299,47 +1323,49 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
                   <div className="text-[11px] text-slate-400">Seat{player.seatNumber}</div>
                 </div>
                 <div className="flex items-center gap-1">
-                  <button type="button" onClick={() => setCardTarget({ label: `${player.displayName} ホールカード`, max: 2, cards: showdownCards[player.id] || [], setCards: (cards) => setShowdownCards((current) => ({ ...current, [player.id]: cards })) })} className="flex gap-1">
+                  <button type="button" onClick={() => setCardTarget({ label: `${player.displayName} ホールカード`, max: 2, cards: showdownCards[player.id] || [], setCards: (cards) => {
+                    setShowdownCards((current) => ({ ...current, [player.id]: cards }));
+                    setShowdownStatus((current) => ({ ...current, [player.id]: cards.length ? "shown" : current[player.id] || "unknown" }));
+                  }, onComplete: () => setCardTarget(null) })} className="flex gap-1">
                     <MiniCard card={showdownCards[player.id]?.[0]} />
                     <MiniCard card={showdownCards[player.id]?.[1]} />
                   </button>
-                  <input value={resultByPlayer[player.id] || ""} onChange={(event) => setResultByPlayer((current) => ({ ...current, [player.id]: event.target.value }))} placeholder="±bb" inputMode="decimal" className="h-8 w-14 rounded border border-slate-600 bg-slate-950 px-1 text-right text-xs font-black text-slate-100" />
                 </div>
               </div>
             ))}
           </div>
         </div>
 
-        <div className="grid min-h-0 grid-rows-[auto_1fr_auto] gap-2">
+        <div className="grid gap-2">
           <div className="rounded-lg border border-slate-700 bg-slate-900 p-2 text-slate-100 shadow-sm">
             <div className="grid grid-cols-[1fr_74px_74px] gap-2">
-              <BoardCardGroup label="Flop" cards={flop} max={3} pot={potByStreet.flop} onPot={(value) => setPotByStreet((current) => ({ ...current, flop: value }))} onCard={() => setCardTarget({ label: "フロップ", max: 3, cards: flop, setCards: setFlop })} />
-              <BoardCardGroup label="Turn" cards={turn} max={1} pot={potByStreet.turn} onPot={(value) => setPotByStreet((current) => ({ ...current, turn: value }))} onCard={() => setCardTarget({ label: "ターン", max: 1, cards: turn, setCards: setTurn })} />
-              <BoardCardGroup label="River" cards={river} max={1} pot={potByStreet.river} onPot={(value) => setPotByStreet((current) => ({ ...current, river: value }))} onCard={() => setCardTarget({ label: "リバー", max: 1, cards: river, setCards: setRiver })} />
+              <BoardCardGroup label="Flop" cards={flop} max={3} pot={potByStreet.flop} onPot={(value) => setPotByStreet((current) => ({ ...current, flop: value }))} onCard={() => setCardTarget({ label: "フロップ", max: 3, cards: flop, setCards: setFlop, onComplete: () => setCardTarget(null) })} />
+              <BoardCardGroup label="Turn" cards={turn} max={1} pot={potByStreet.turn} onPot={(value) => setPotByStreet((current) => ({ ...current, turn: value }))} onCard={() => setCardTarget({ label: "ターン", max: 1, cards: turn, setCards: setTurn, onComplete: () => setCardTarget(null) })} />
+              <BoardCardGroup label="River" cards={river} max={1} pot={potByStreet.river} onPot={(value) => setPotByStreet((current) => ({ ...current, river: value }))} onCard={() => setCardTarget({ label: "リバー", max: 1, cards: river, setCards: setRiver, onComplete: () => setCardTarget(null) })} />
             </div>
           </div>
 
-          <div className="min-h-0 overflow-auto rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
+          <div className="rounded-lg border border-slate-700 bg-slate-900 p-3 text-slate-100 shadow-sm">
             {(["preflop", "flop", "turn", "river"] as Street[]).map((street) => {
-              const rows = street === "preflop" ? preflopOrder : orderedPostflopPlayers(activePlayers, buttonSeat).filter((player) => !hasFolded(player.id, actions));
+              const rows = actionRowsForStreet(street);
               return (
                 <section key={street} className="border-b border-slate-700 py-2 last:border-0">
                   <div className="mb-2 flex items-center justify-between">
-                    <button type="button" onClick={() => setActiveStreet(street)} className={`text-left text-lg font-black ${activeStreet === street ? "text-emerald-300" : "text-slate-200"}`}>{streetLabels[street]} {street !== "preflop" && <span className="text-sm text-slate-400">{potByStreet[street] && `${potByStreet[street]}bb`}</span>}</button>
+                    <button type="button" onClick={() => setActiveStreet(street)} className={`text-left text-lg font-black ${activeStreet === street ? "text-emerald-300" : "text-slate-200"}`}>{streetLabels[street]} {street !== "preflop" && <span className="text-sm text-slate-400">{potByStreet[street] && `${potByStreet[street]}`}</span>}</button>
                     <button type="button" onClick={() => undoLastAction(street)} className="text-xs font-bold text-slate-400">戻す</button>
                   </div>
                   <div className="grid gap-1">
-                    {rows.map((player) => {
+                    {rows.map(({ player, repeat }, rowIndex) => {
                       const playerActions = visibleActions(street).filter((action) => action.actorSessionPlayerId === player.id);
                       const latest = playerActions.at(-1);
                       const isCurrent = actionTarget?.playerId === player.id && actionTarget.street === street;
                       return (
-                        <button key={`${street}-${player.id}`} type="button" onClick={() => {
+                        <button key={`${street}-${player.id}-${rowIndex}`} type="button" onClick={() => {
                           setActiveStreet(street);
                           setActionTarget({ playerId: player.id, street });
                         }} className={`grid grid-cols-[48px_1fr_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left ${isCurrent ? "bg-amber-300 text-slate-950" : "bg-slate-800 text-slate-100"}`}>
                           <span className="rounded bg-slate-600 px-2 py-1 text-center text-xs font-black text-white">{positionMap.get(player.id) || "-"}</span>
-                          <span className="truncate text-sm font-black">{player.displayName}</span>
+                          <span className="truncate text-sm font-black">{player.displayName}{repeat ? " / 再アクション" : ""}</span>
                           <span className={`text-sm font-black ${actionColor(latest?.actionType)}`}>{latest ? actionDisplay(latest, session) : player.id === bbPlayerId && street === "preflop" ? "" : "Fold"}</span>
                         </button>
                       );
@@ -1350,9 +1376,8 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
             })}
           </div>
 
-          <div className="grid grid-cols-4 gap-2">
-            <button type="button" onClick={() => setShowdownOpen(true)} className="h-10 rounded-md border border-slate-300 bg-white text-sm font-black">Showdown</button>
-            <input value={movedBb} onChange={(event) => setMovedBb(event.target.value)} inputMode="decimal" placeholder="動いたBB" className="input" />
+          <div className="grid grid-cols-3 gap-2">
+            <button type="button" onClick={() => setResultOpen(true)} className="h-10 rounded-md border border-slate-300 bg-white text-sm font-black">結果</button>
             <input value={resultText} onChange={(event) => setResultText(event.target.value)} placeholder="結果" className="input" />
             <button type="button" onClick={saveGame} className="h-10 rounded-md bg-emerald-700 text-sm font-black text-white">保存</button>
           </div>
@@ -1369,39 +1394,49 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
         onAdd={addAction}
       />
 
-      <BottomSheet title="Showdown / ホールカード" open={showdownOpen} onClose={() => setShowdownOpen(false)}>
-        <div className="grid max-h-[52dvh] gap-2 overflow-auto">
-          {orderedPlayers.map((player) => (
-            <div key={player.id} className="rounded-md border border-stone-200 p-2">
-              <div className="mb-2 text-sm font-black">Seat{player.seatNumber} {player.displayName}</div>
-              <div className="grid grid-cols-4 gap-2">
-                {([
-                  ["shown", "ショー"],
-                  ["mucked", "マック"],
-                  ["unknown", "不明"],
-                ] as [ShowdownStatus, string][]).map(([status, label]) => (
-                  <button key={status} type="button" onClick={() => setShowdownStatus((current) => ({ ...current, [player.id]: status }))} className={`h-9 rounded-md border text-xs font-black ${(showdownStatus[player.id] || "unknown") === status ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
-                    {label}
-                  </button>
-                ))}
-                <button type="button" onClick={() => setCardTarget({ label: `${player.displayName} カード`, max: 2, cards: showdownCards[player.id] || [], setCards: (cards) => setShowdownCards((current) => ({ ...current, [player.id]: cards })) })} className="h-9 rounded-md border border-stone-200 text-xs font-black">
-                  {showdownCards[player.id]?.join(" ") || "カード"}
+      <BottomSheet title="結果" open={resultOpen} onClose={() => setResultOpen(false)}>
+        <div className="grid gap-3">
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="rounded-md bg-stone-100 p-2 font-bold">Pot: {formatShortAmount(currentPotAmount, session)}</div>
+            <div className="rounded-md bg-stone-100 p-2 font-bold">Rake: {formatShortAmount(currentRakeAmount, session)}</div>
+          </div>
+          <div>
+            <div className="mb-1 text-xs font-black text-stone-600">勝者</div>
+            <div className="grid max-h-[36dvh] gap-2 overflow-auto">
+              {livePlayers.map((player) => (
+                <button key={player.id} type="button" onClick={() => {
+                  setWinnerId(player.id);
+                  setResultText(`${player.displayName} won ${formatShortAmount(winnerAmount, session)}`);
+                }} className={`h-10 rounded-md border text-sm font-black ${winnerId === player.id ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
+                  {positionMap.get(player.id)} {player.displayName}
                 </button>
-              </div>
+              ))}
             </div>
-          ))}
+          </div>
+          <div className="rounded-md bg-emerald-50 p-2 text-sm font-bold text-emerald-900">
+            勝者獲得: {formatShortAmount(winnerAmount, session)}
+          </div>
         </div>
       </BottomSheet>
 
       <BottomSheet title={cardTarget?.label || "カード"} open={!!cardTarget} onClose={() => setCardTarget(null)}>
-        {cardTarget && <CardPicker cards={cardTarget.cards} max={cardTarget.max} usedCards={usedCards.filter((card) => !cardTarget.cards.includes(card))} onChange={cardTarget.setCards} />}
+        {cardTarget && <CardPicker cards={cardTarget.cards} max={cardTarget.max} usedCards={usedCards.filter((card) => !cardTarget.cards.includes(card))} onChange={cardTarget.setCards} onComplete={cardTarget.onComplete} />}
       </BottomSheet>
+      </div>
     </div>
   );
 }
 
-function hasFolded(playerId: string, actions: HandAction[]) {
-  return actions.some((action) => action.actorSessionPlayerId === playerId && action.actionType === "fold");
+function hasFoldedBeforeStreet(playerId: string, actions: HandAction[], street: Street) {
+  const order: Street[] = ["preflop", "flop", "turn", "river", "showdown"];
+  const targetIndex = order.indexOf(street);
+  return actions.some((action) => action.actorSessionPlayerId === playerId && action.actionType === "fold" && order.indexOf(action.street) < targetIndex);
+}
+
+function isAllInBeforeStreet(playerId: string, actions: HandAction[], street: Street) {
+  const order: Street[] = ["preflop", "flop", "turn", "river", "showdown"];
+  const targetIndex = order.indexOf(street);
+  return actions.some((action) => action.actorSessionPlayerId === playerId && action.actionType === "allin" && order.indexOf(action.street) < targetIndex);
 }
 
 function foldedStreet(playerId: string, actions: HandAction[]) {
@@ -1416,8 +1451,15 @@ function actionColor(type?: ActionType) {
 }
 
 function actionDisplay(action: HandAction, session: Session) {
-  const amount = action.amount ? ` ${formatBb(action.amount, session.bigBlindAmount)}` : "";
+  const amount = action.amount ? ` ${formatShortAmount(action.amount, session)}` : "";
   return `${actionLabels[action.actionType]}${amount}`;
+}
+
+function formatShortAmount(amount: number | undefined, session: Pick<Session, "amountInputUnit" | "playUnitName">) {
+  if (amount === undefined || Number.isNaN(amount)) return "-";
+  const short = amount / session.amountInputUnit;
+  const text = Number.isInteger(short) ? String(short) : short.toFixed(1);
+  return `${text}${session.playUnitName ? ` ${session.playUnitName}` : ""}`;
 }
 
 function ActionSheet({
@@ -1431,7 +1473,7 @@ function ActionSheet({
   players: SessionPlayer[];
   session: Session;
   onClose: () => void;
-  onAdd: (player: SessionPlayer, actionType: ActionType, amountInput?: string) => void;
+  onAdd: (player: SessionPlayer, actionType: ActionType, amountInput?: string, street?: Street) => void;
 }) {
   const [amount, setAmount] = useState("");
   const player = players.find((item) => item.id === target?.playerId);
@@ -1449,7 +1491,7 @@ function ActionSheet({
             ["allin", "All-in"],
           ] as [ActionType, string][]).map(([type, label]) => (
             <button key={type} type="button" onClick={() => {
-              onAdd(player, type, amount);
+              onAdd(player, type, amount, target.street);
               setAmount("");
             }} className="h-11 rounded-md border border-stone-200 bg-white text-sm font-black">
               {label}
@@ -1463,8 +1505,16 @@ function ActionSheet({
 
 function MiniCard({ card }: { card?: string }) {
   if (!card) return <span className="h-8 w-7 rounded border border-slate-500 bg-slate-950" />;
-  const red = card.includes("♥") || card.includes("♦");
-  return <span className={`grid h-8 w-7 place-items-center rounded border border-white/70 text-xs font-black ${red ? "bg-red-500 text-white" : "bg-blue-600 text-white"}`}>{card}</span>;
+  const rank = card.slice(0, -1);
+  const suit = card.slice(-1);
+  const suitLabel = SUITS.find((item) => item.value === suit)?.label || suit;
+  const colors: Record<string, string> = {
+    h: "bg-red-500 text-white",
+    d: "bg-blue-600 text-white",
+    s: "bg-zinc-900 text-white",
+    c: "bg-emerald-600 text-white",
+  };
+  return <span className={`grid h-8 w-7 place-items-center rounded border border-white/70 text-xs font-black ${colors[suit] || "bg-slate-600 text-white"}`}>{rank}{suitLabel}</span>;
 }
 
 function BoardCardGroup({ label, cards, max, pot, onPot, onCard }: { label: string; cards: string[]; max: number; pot: string; onPot: (value: string) => void; onCard: () => void }) {
@@ -1481,20 +1531,32 @@ function BoardCardGroup({ label, cards, max, pot, onPot, onCard }: { label: stri
   );
 }
 
-function CardPicker({ cards, max, usedCards, onChange }: { cards: string[]; max: number; usedCards: string[]; onChange: (cards: string[]) => void }) {
+function CardPicker({ cards, max, usedCards, onChange, onComplete }: { cards: string[]; max: number; usedCards: string[]; onChange: (cards: string[]) => void; onComplete?: () => void }) {
   const [rank, setRank] = useState<string | null>(null);
   function add(suit: string) {
     if (!rank || cards.length >= max) return;
     const card = `${rank}${suit}`;
     if (cards.includes(card) || usedCards.includes(card)) return;
-    onChange([...cards, card]);
+    const nextCards = [...cards, card];
+    onChange(nextCards);
+    setRank(null);
+    if (nextCards.length >= max) setTimeout(() => onComplete?.(), 80);
+  }
+  function remove(index: number) {
+    onChange(cards.filter((_, cardIndex) => cardIndex !== index));
     setRank(null);
   }
   return (
     <div>
-      <div className="mb-2 flex items-center justify-between">
-        <div className="text-sm font-black">{cards.join(" ") || "未入力"}</div>
-        {cards.length > 0 && <button type="button" onClick={() => onChange(cards.slice(0, -1))} className="text-xs font-bold text-stone-500">1枚削除</button>}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex gap-1">
+          {Array.from({ length: max }).map((_, index) => (
+            <button key={index} type="button" onClick={() => cards[index] && remove(index)} className="relative">
+              <MiniCard card={cards[index]} />
+            </button>
+          ))}
+        </div>
+        {cards.length > 0 && <button type="button" onClick={() => onChange([])} className="text-xs font-bold text-stone-500">全削除</button>}
       </div>
       <div className="grid grid-cols-7 gap-1">
         {RANKS.map((item) => (
@@ -1506,7 +1568,7 @@ function CardPicker({ cards, max, usedCards, onChange }: { cards: string[]; max:
       {rank && (
         <div className="mt-3 grid grid-cols-4 gap-2">
           {SUITS.map((suit) => (
-            <button key={suit.value} type="button" onClick={() => add(suit.value)} disabled={usedCards.includes(`${rank}${suit.value}`)} className={`h-12 rounded-md border border-stone-200 bg-white text-2xl font-black disabled:opacity-30 ${suit.color}`}>
+            <button key={suit.value} type="button" onClick={() => add(suit.value)} disabled={usedCards.includes(`${rank}${suit.value}`)} className={`h-12 rounded-md border border-stone-200 bg-white text-2xl font-black disabled:opacity-30 ${suit.value === "h" ? "text-red-600" : suit.value === "d" ? "text-blue-600" : suit.value === "c" ? "text-emerald-700" : "text-zinc-950"}`}>
               {suit.label}
             </button>
           ))}
@@ -1521,7 +1583,7 @@ function AmountInput({ label, value, session, onChange }: { label: string; value
   return (
     <Field label={label}>
       <input value={value} onChange={(event) => onChange(event.target.value)} inputMode="decimal" className="input" />
-      <span className="mt-1 block text-xs text-stone-500">{actual === undefined ? `省略単位: ${session.amountInputUnit.toLocaleString()}` : `${formatAmount(actual, session.playUnitName)} / ${formatBb(actual, session.bigBlindAmount)}`}</span>
+      <span className="mt-1 block text-xs text-stone-500">{actual === undefined ? `省略単位: ${session.amountInputUnit.toLocaleString()}` : `${formatShortAmount(actual, session)}（実額 ${formatAmount(actual, session.playUnitName)}）`}</span>
     </Field>
   );
 }
@@ -1634,7 +1696,7 @@ function GameHistoryDetail({ session, game }: { session: Session; game: Hand }) 
               <span className="truncate text-sm font-black">{participant.displayName}</span>
               <span className="flex gap-1">{participant.holeCards?.map((card) => <MiniCard key={card} card={card} />)}</span>
               <span className={`text-sm font-black ${(participant.resultAmount || 0) < 0 ? "text-red-400" : (participant.resultAmount || 0) > 0 ? "text-emerald-400" : "text-slate-400"}`}>
-                {participant.resultAmount !== undefined ? formatBb(participant.resultAmount, session.bigBlindAmount) : "±0bb"}
+                {participant.resultAmount !== undefined ? formatShortAmount(participant.resultAmount, session) : "±0"}
               </span>
             </div>
           ))}
