@@ -199,6 +199,7 @@ export function PokerLogApp() {
         {view === "table" && activeSession && (
           <TableScreen
             session={activeSession}
+            profile={profile}
             players={activePlayers}
             roster={sessionRoster}
             games={activeGames}
@@ -406,23 +407,6 @@ function SessionForm({
     });
 
     await db.savedRates.add({ id: uid(), venueId: venue.id, playUnitId: unit.id, label: rateLabel, smallBlindAmount, bigBlindAmount, amountInputUnit, lastUsedAt: time });
-    const existingHero = await db.playerProfiles.where("nickname").equals(profile.heroName).first();
-    const heroProfileId = existingHero?.id || uid();
-    if (!existingHero) await db.playerProfiles.add({ id: heroProfileId, nickname: profile.heroName, aliases: ["Hero"], tendencies: {}, createdAt: time, updatedAt: time });
-    await db.sessionPlayers.add({
-      id: uid(),
-      sessionId: id,
-      playerProfileId: heroProfileId,
-      displayName: profile.heroName,
-      seatNumber: 1,
-      isHero: true,
-      isActive: true,
-      joinedAtGameNumber: 1,
-      sessionTendencies: {},
-      seatHistory: [{ id: uid(), seatNumber: 1, isCurrent: true }],
-      createdAt: time,
-      updatedAt: time,
-    });
 
     onDone(id);
   }
@@ -512,6 +496,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 
 function TableScreen({
   session,
+  profile,
   players,
   roster,
   games,
@@ -522,6 +507,7 @@ function TableScreen({
   onHome,
 }: {
   session: Session;
+  profile: UserProfile;
   players: SessionPlayer[];
   roster: SessionPlayer[];
   games: Hand[];
@@ -561,6 +547,7 @@ function TableScreen({
       {selectedSeat && (
         <PlayerSheet
           session={session}
+          profile={profile}
           seat={selectedSeat}
           players={players}
           roster={roster}
@@ -661,6 +648,7 @@ function firstEmptySeat(players: SessionPlayer[]) {
 
 function PlayerSheet({
   session,
+  profile,
   seat,
   players,
   roster,
@@ -670,6 +658,7 @@ function PlayerSheet({
   onDone,
 }: {
   session: Session;
+  profile: UserProfile;
   seat: number;
   players: SessionPlayer[];
   roster: SessionPlayer[];
@@ -680,7 +669,7 @@ function PlayerSheet({
 }) {
   const existing = players.find((player) => player.seatNumber === seat);
   const [selectedSeat, setSelectedSeat] = useState(String(seat));
-  const [mode, setMode] = useState<"edit" | "new" | "past">(existing ? "edit" : "new");
+  const [mode, setMode] = useState<"edit" | "hero" | "new" | "past">(existing ? "edit" : "hero");
   const [nickname, setNickname] = useState(existing?.displayName || "");
   const [query, setQuery] = useState("");
   const [selectedProfileId, setSelectedProfileId] = useState(existing?.playerProfileId || "");
@@ -690,31 +679,33 @@ function PlayerSheet({
   const matches = playerProfiles
     .filter((profile) => profile.nickname.toLowerCase().includes(query.toLowerCase()))
     .slice(0, 8);
+  const hasActiveHero = players.some((player) => player.isHero && player.id !== existing?.id);
 
   async function save() {
     const time = nowIso();
     const nextSeat = Number(selectedSeat);
     const selectedProfile = playerProfiles.find((item) => item.id === selectedProfileId);
-    const finalName = mode === "past" ? selectedProfile?.nickname || "" : nickname.trim();
+    const finalName = mode === "hero" ? profile.heroName : mode === "past" ? selectedProfile?.nickname || "" : nickname.trim();
     if (!finalName) return setError(mode === "past" ? "過去プレイヤーを選択してください。" : "ニックネームを入力してください。");
+    if (mode === "hero" && hasActiveHero) return setError("Heroはこのセッションで既に登録されています。");
     if (usedSeats.has(nextSeat)) return setError("そのSeatは使用中です。");
     if (roster.some((player) => player.id !== existing?.id && player.displayName === finalName)) return setError("このセッション内で同じ名前は使えません。");
 
-    let profile = selectedProfile;
+    let playerProfile = mode === "hero" ? playerProfiles.find((item) => item.nickname === profile.heroName) : selectedProfile;
     const exactProfile = playerProfiles.find((item) => item.nickname === finalName);
-    if (mode !== "edit" && !profile && exactProfile) return setError("同じ名前の過去プレイヤーがあります。検索結果から選択してください。");
+    if (mode !== "edit" && mode !== "hero" && !playerProfile && exactProfile) return setError("同じ名前の過去プレイヤーがあります。検索結果から選択してください。");
     if (mode === "edit" && exactProfile && exactProfile.id !== existing?.playerProfileId) return setError("同じ名前の別プレイヤーが登録済みです。");
-    if (!profile) {
+    if (!playerProfile) {
       if (existing?.playerProfileId) {
-        profile = playerProfiles.find((item) => item.id === existing.playerProfileId);
-        if (profile) await db.playerProfiles.update(profile.id, { nickname: finalName, updatedAt: time });
+        playerProfile = playerProfiles.find((item) => item.id === existing.playerProfileId);
+        if (playerProfile) await db.playerProfiles.update(playerProfile.id, { nickname: finalName, updatedAt: time });
       }
-      if (!profile) {
-        profile = { id: uid(), nickname: finalName, aliases: [], tendencies: {}, createdAt: time, updatedAt: time };
-        await db.playerProfiles.add(profile);
+      if (!playerProfile) {
+        playerProfile = { id: uid(), nickname: finalName, aliases: mode === "hero" ? ["Hero"] : [], tendencies: {}, createdAt: time, updatedAt: time };
+        await db.playerProfiles.add(playerProfile);
       }
-    } else if (mode === "edit" && profile.nickname !== finalName) {
-      await db.playerProfiles.update(profile.id, { nickname: finalName, updatedAt: time });
+    } else if (mode === "edit" && playerProfile.nickname !== finalName) {
+      await db.playerProfiles.update(playerProfile.id, { nickname: finalName, updatedAt: time });
     }
 
     if (existing) {
@@ -725,7 +716,7 @@ function PlayerSheet({
             { id: uid(), seatNumber: nextSeat, isCurrent: true },
           ];
       await db.sessionPlayers.update(existing.id, {
-        playerProfileId: profile.id,
+        playerProfileId: playerProfile.id,
         displayName: finalName,
         seatNumber: nextSeat,
         isActive: true,
@@ -737,10 +728,10 @@ function PlayerSheet({
       await db.sessionPlayers.add({
         id: uid(),
         sessionId: session.id,
-        playerProfileId: profile.id,
+        playerProfileId: playerProfile.id,
         displayName: finalName,
         seatNumber: nextSeat,
-        isHero: false,
+        isHero: mode === "hero",
         isActive: true,
         joinedAtGameNumber: nextGameNumber,
         sessionNotes: notes,
@@ -777,7 +768,14 @@ function PlayerSheet({
           ))}
         </div>
         {!existing && (
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-3 gap-2">
+            <button type="button" disabled={hasActiveHero} onClick={() => {
+              setMode("hero");
+              setSelectedProfileId("");
+              setError("");
+            }} className={`h-10 rounded-md border text-sm font-black disabled:opacity-35 ${mode === "hero" ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
+              Hero登録
+            </button>
             <button type="button" onClick={() => {
               setMode("new");
               setSelectedProfileId("");
@@ -793,7 +791,11 @@ function PlayerSheet({
             </button>
           </div>
         )}
-        {mode === "new" || mode === "edit" ? (
+        {mode === "hero" ? (
+          <div className="rounded-md border border-emerald-100 bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-900">
+            Hero名: {profile.heroName}
+          </div>
+        ) : mode === "new" || mode === "edit" ? (
           <Field label={mode === "edit" ? "ニックネーム変更" : "ニックネーム"}>
             <input value={nickname} onChange={(event) => {
               setNickname(event.target.value);
