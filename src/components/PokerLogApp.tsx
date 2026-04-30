@@ -1209,7 +1209,6 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
 
   function addAction(player: SessionPlayer, actionType: ActionType, amountInput = "", street = activeStreet) {
     const orderPlayers = playersForStreet(street);
-    const playerIndex = orderPlayers.findIndex((item) => item.id === player.id);
     const streetRank = ["preflop", "flop", "turn", "river", "showdown"] as Street[];
     const streetIndex = streetRank.indexOf(street);
     const currentActor = requiredPlayers(orderPlayers, [...blindActions(activePlayers, blinds, session), ...actions], street, session, blinds)[0];
@@ -1217,11 +1216,7 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
     const prunedActions = actions.filter((action) => {
       const actionStreetIndex = streetRank.indexOf(action.street);
       if (actionStreetIndex > streetIndex) return false;
-      if (action.street !== street) return true;
-      const actorIndex = orderPlayers.findIndex((item) => item.id === action.actorSessionPlayerId);
-      if (actorIndex === -1) return false;
-      if (actorIndex < playerIndex) return true;
-      return false;
+      return true;
     });
     const stateBeforeAction = streetState([...blindActions(activePlayers, blinds, session), ...prunedActions], street, session, blinds);
     const currentContribution = stateBeforeAction.contributions.get(player.id) || 0;
@@ -1625,18 +1620,73 @@ function streetState(actions: HandAction[], street: Street, session: Session, bl
 }
 
 function requiredPlayers(orderPlayers: SessionPlayer[], actions: HandAction[], street: Street, session: Session, blinds: ReturnType<typeof deriveButtonBlindSeats>) {
-  const state = streetState(actions, street, session, blinds);
+  const state = streetProgress(orderPlayers, actions, street, session, blinds);
+  return state.pendingPlayers
+    .map((id) => orderPlayers.find((player) => player.id === id))
+    .filter((player): player is SessionPlayer => Boolean(player));
+}
 
-  return orderPlayers.filter((player) => {
-    const latest = state.latestByPlayer.get(player.id);
-    if (latest?.actionType === "fold" || latest?.actionType === "allin") return false;
-    const contribution = state.contributions.get(player.id) || 0;
-    if (state.currentBet === 0) return !latest;
-    if (contribution < state.currentBet) return true;
-    if (!latest) return true;
-    if (state.latestAggressiveOrder === -1 || state.latestAggressorId === player.id) return false;
-    return latest.order < state.latestAggressiveOrder;
+function streetProgress(orderPlayers: SessionPlayer[], actions: HandAction[], street: Street, session: Session, blinds: ReturnType<typeof deriveButtonBlindSeats>) {
+  const state = streetState(actions, street, session, blinds);
+  const status = new Map(orderPlayers.map((player) => [player.id, "ACTIVE"]));
+  const streetActions = actions
+    .filter((action) => action.street === street && action.actionType !== "blind")
+    .sort((a, b) => a.order - b.order);
+  let pendingPlayers = initialPendingPlayers(orderPlayers, street, blinds);
+  let currentBet = street === "preflop" ? session.bigBlindAmount : 0;
+  let minimumRaiseIncrement = session.bigBlindAmount;
+
+  streetActions.forEach((action) => {
+    if (action.actionType === "fold") {
+      status.set(action.actorSessionPlayerId, "FOLDED");
+      pendingPlayers = pendingPlayers.filter((id) => id !== action.actorSessionPlayerId);
+      return;
+    }
+
+    if (action.actionType === "check" || action.actionType === "call") {
+      pendingPlayers = pendingPlayers.filter((id) => id !== action.actorSessionPlayerId);
+      return;
+    }
+
+    if (action.actionType === "bet_raise") {
+      const newBet = action.amount || 0;
+      const raiseIncrement = newBet - currentBet;
+      currentBet = newBet;
+      minimumRaiseIncrement = Math.max(raiseIncrement, minimumRaiseIncrement);
+      pendingPlayers = playersAfterActor(orderPlayers, action.actorSessionPlayerId)
+        .filter((player) => player.id !== action.actorSessionPlayerId && status.get(player.id) === "ACTIVE")
+        .map((player) => player.id);
+      return;
+    }
+
+    if (action.actionType === "allin") {
+      status.set(action.actorSessionPlayerId, "ALL_IN");
+      const allInAmount = action.amount || 0;
+      if (allInAmount >= currentBet + minimumRaiseIncrement) {
+        minimumRaiseIncrement = allInAmount - currentBet;
+        currentBet = allInAmount;
+        pendingPlayers = playersAfterActor(orderPlayers, action.actorSessionPlayerId)
+          .filter((player) => player.id !== action.actorSessionPlayerId && status.get(player.id) === "ACTIVE")
+          .map((player) => player.id);
+      } else {
+        pendingPlayers = pendingPlayers.filter((id) => id !== action.actorSessionPlayerId);
+      }
+    }
   });
+
+  pendingPlayers = pendingPlayers.filter((id) => status.get(id) === "ACTIVE");
+  return { ...state, status, pendingPlayers };
+}
+
+function initialPendingPlayers(orderPlayers: SessionPlayer[], street: Street, blinds: ReturnType<typeof deriveButtonBlindSeats>) {
+  if (street !== "preflop") return orderPlayers.map((player) => player.id);
+  return orderPlayers.filter((player) => player.seatNumber !== blinds.bbSeat).map((player) => player.id);
+}
+
+function playersAfterActor(orderPlayers: SessionPlayer[], actorId: string) {
+  const actorIndex = orderPlayers.findIndex((player) => player.id === actorId);
+  if (actorIndex === -1) return orderPlayers;
+  return [...orderPlayers.slice(actorIndex + 1), ...orderPlayers.slice(0, actorIndex)];
 }
 
 function estimatePotByStreetContributions(actions: HandAction[]) {

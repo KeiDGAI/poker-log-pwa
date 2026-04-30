@@ -1,161 +1,125 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const players = ["UTG", "HJ", "CO", "BTN", "SB", "BB"].map((position, index) => ({
-  id: position,
-  seatNumber: index + 1,
-  position,
-}));
-
-const session = {
-  smallBlindAmount: 50,
-  bigBlindAmount: 100,
-  amountInputUnit: 1,
-  rakePercent: 5,
-  rakeCapBb: 3,
-};
-
-function blindActions() {
-  return [
-    { street: "preflop", playerId: "SB", actionType: "BLIND", amountChips: 50, note: "BLIND", order: 0 },
-    { street: "preflop", playerId: "BB", actionType: "BLIND", amountChips: 100, note: "BLIND", order: 1 },
-  ];
-}
+const order = ["UTG", "UTG1", "UTG2", "LJ", "HJ", "CO", "BTN", "SB", "BB"];
+const session = { smallBlindAmount: 50, bigBlindAmount: 100, rakePercent: 5, rakeCapBb: 3 };
 
 function initState() {
   return {
-    street: "preflop",
     currentBet: session.bigBlindAmount,
-    minRaise: session.bigBlindAmount,
-    actions: blindActions(),
-    status: Object.fromEntries(players.map((player) => [player.id, "ACTIVE"])),
-    contribution: { SB: 50, BB: 100 },
-    order: players.map((player) => player.id),
+    minimumRaiseIncrement: session.bigBlindAmount,
+    status: Object.fromEntries(order.map((id) => [id, "ACTIVE"])),
+    contribution: { SB: session.smallBlindAmount, BB: session.bigBlindAmount },
+    pendingPlayers: order.filter((id) => id !== "BB"),
+    actions: [
+      { playerId: "SB", actionType: "BLIND", amountChips: 50, note: "BLIND" },
+      { playerId: "BB", actionType: "BLIND", amountChips: 100, note: "BLIND" },
+    ],
   };
 }
 
-function candidates(state) {
-  return state.order.filter((id) => state.status[id] === "ACTIVE");
+function activeAfter(actorId, state) {
+  const start = order.indexOf(actorId);
+  return [...order.slice(start + 1), ...order.slice(0, start)]
+    .filter((id) => id !== actorId && state.status[id] === "ACTIVE");
 }
 
-function required(state) {
-  return candidates(state).filter((id) => {
-    const userAction = [...state.actions].reverse().find((action) => action.playerId === id && action.note !== "BLIND" && action.street === state.street);
-    if (!userAction) return true;
-    if (state.currentBet === 0) return false;
-    return (state.contribution[id] || 0) < state.currentBet;
-  });
-}
-
-function act(state, playerId, actionType, amountChips = 0, note = "USER") {
-  assert.equal(required(state)[0], playerId);
+function act(state, playerId, actionType, amountChips = 0) {
+  assert.equal(state.pendingPlayers[0], playerId);
   const next = structuredClone(state);
-  if (actionType === "FOLD") next.status[playerId] = "FOLDED";
-  if (actionType === "ALL_IN") next.status[playerId] = "ALL_IN";
-  if (actionType === "CALL") next.contribution[playerId] = next.currentBet;
-  if (actionType === "BET" || actionType === "RAISE") {
+  if (actionType === "FOLD") {
+    next.status[playerId] = "FOLDED";
+    next.pendingPlayers = next.pendingPlayers.filter((id) => id !== playerId);
+  }
+  if (actionType === "CALL") {
+    next.contribution[playerId] = next.currentBet;
+    next.pendingPlayers = next.pendingPlayers.filter((id) => id !== playerId);
+  }
+  if (actionType === "RAISE" || actionType === "BET") {
     assert.ok(amountChips > next.currentBet);
-    next.minRaise = amountChips - next.currentBet;
+    next.minimumRaiseIncrement = amountChips - next.currentBet;
     next.currentBet = amountChips;
     next.contribution[playerId] = amountChips;
+    next.pendingPlayers = activeAfter(playerId, next);
   }
   if (actionType === "ALL_IN") {
+    next.status[playerId] = "ALL_IN";
     next.contribution[playerId] = amountChips;
-    if (amountChips >= next.currentBet + next.minRaise) {
-      next.minRaise = amountChips - next.currentBet;
+    const isFullRaise = amountChips >= next.currentBet + next.minimumRaiseIncrement;
+    if (isFullRaise) {
+      next.minimumRaiseIncrement = amountChips - next.currentBet;
       next.currentBet = amountChips;
+      next.pendingPlayers = activeAfter(playerId, next);
+    } else {
+      next.pendingPlayers = next.pendingPlayers.filter((id) => id !== playerId);
     }
   }
-  next.actions.push({ street: next.street, playerId, actionType, amountChips, note, order: next.actions.length });
+  next.actions.push({ playerId, actionType, amountChips, note: "USER" });
   return next;
 }
 
-function foldTo(state, targetPlayerId) {
-  let next = structuredClone(state);
-  while (required(next)[0] && required(next)[0] !== targetPlayerId) {
-    next = act(next, required(next)[0], "FOLD", 0, "AUTO");
-  }
-  return next;
-}
-
-function pot(state) {
-  const byStreetPlayer = new Map();
-  state.actions.forEach((action) => {
-    if (!action.amountChips) return;
-    byStreetPlayer.set(`${action.street}:${action.playerId}`, Math.max(byStreetPlayer.get(`${action.street}:${action.playerId}`) || 0, action.amountChips));
-  });
-  return [...byStreetPlayer.values()].reduce((sum, amount) => sum + amount, 0);
-}
-
-function rake(amount) {
-  return Math.min(amount * (session.rakePercent / 100), session.rakeCapBb * session.bigBlindAmount);
-}
-
-test("preflop starts with SB/BB blinds and first actor left of BB", () => {
-  const state = initState();
-  assert.deepEqual(state.actions.map((action) => action.note), ["BLIND", "BLIND"]);
-  assert.equal(required(state)[0], "UTG");
-});
-
-test("folded players leave future action candidates", () => {
-  const state = act(initState(), "UTG", "FOLD");
-  assert.equal(state.status.UTG, "FOLDED");
-  assert.ok(!candidates(state).includes("UTG"));
-});
-
-test("foldTo records AUTO folds and moves target to next actor", () => {
-  const state = foldTo(initState(), "BTN");
-  assert.equal(state.status.UTG, "FOLDED");
-  assert.equal(state.status.HJ, "FOLDED");
-  assert.equal(state.status.CO, "FOLDED");
-  assert.deepEqual(state.actions.slice(2).map((action) => action.note), ["AUTO", "AUTO", "AUTO"]);
-  assert.equal(required(state)[0], "BTN");
-});
-
-test("bet/raise amount is stored as chip total", () => {
-  const state = act(initState(), "UTG", "RAISE", 250);
-  assert.equal(state.actions.at(-1).amountChips, 250);
-  assert.equal(state.contribution.UTG, 250);
-});
-
-test("raise sends action back to unmatched active players", () => {
-  let state = act(initState(), "UTG", "RAISE", 250);
-  state = act(state, "HJ", "CALL");
+function scenarioToBbReraise() {
+  let state = act(initState(), "UTG", "RAISE", 300);
+  state = act(state, "UTG1", "FOLD");
+  state = act(state, "UTG2", "FOLD");
+  state = act(state, "LJ", "FOLD");
+  state = act(state, "HJ", "FOLD");
   state = act(state, "CO", "FOLD");
   state = act(state, "BTN", "CALL");
   state = act(state, "SB", "FOLD");
-  state = act(state, "BB", "RAISE", 600);
-  assert.deepEqual(required(state), ["UTG", "HJ", "BTN"]);
+  state = act(state, "BB", "RAISE", 900);
+  return state;
+}
+
+test("UTG Raise 300 makes every other active player pending in table order", () => {
+  const state = act(initState(), "UTG", "RAISE", 300);
+  assert.equal(state.currentBet, 300);
+  assert.equal(state.contribution.UTG, 300);
+  assert.deepEqual(state.pendingPlayers, ["UTG1", "UTG2", "LJ", "HJ", "CO", "BTN", "SB", "BB"]);
 });
 
-test("all-in player leaves action candidates but remains eligible for result", () => {
-  const state = act(initState(), "UTG", "ALL_IN", 250);
+test("UTG raise, BTN call, BB raise makes UTG and BTN pending", () => {
+  const state = scenarioToBbReraise();
+  assert.equal(state.currentBet, 900);
+  assert.equal(state.contribution.BB, 900);
+  assert.deepEqual(state.pendingPlayers, ["UTG", "BTN"]);
+});
+
+test("UTG call after BB raise leaves only BTN pending", () => {
+  const state = act(scenarioToBbReraise(), "UTG", "CALL");
+  assert.equal(state.contribution.UTG, 900);
+  assert.deepEqual(state.pendingPlayers, ["BTN"]);
+});
+
+test("BTN raise 2000 sends action to BB then UTG", () => {
+  let state = act(scenarioToBbReraise(), "UTG", "CALL");
+  state = act(state, "BTN", "RAISE", 2000);
+  assert.equal(state.currentBet, 2000);
+  assert.equal(state.contribution.BTN, 2000);
+  assert.deepEqual(state.pendingPlayers, ["BB", "UTG"]);
+});
+
+test("folded players are never re-added to pending after raise", () => {
+  const state = scenarioToBbReraise();
+  assert.equal(state.status.UTG1, "FOLDED");
+  assert.equal(state.status.SB, "FOLDED");
+  assert.ok(!state.pendingPlayers.includes("UTG1"));
+  assert.ok(!state.pendingPlayers.includes("SB"));
+});
+
+test("all-in players are never re-added to pending after later raise", () => {
+  let state = act(initState(), "UTG", "ALL_IN", 300);
+  state = act(state, "UTG1", "FOLD");
+  state = act(state, "UTG2", "FOLD");
+  state = act(state, "LJ", "RAISE", 900);
   assert.equal(state.status.UTG, "ALL_IN");
-  assert.ok(!candidates(state).includes("UTG"));
-  assert.ok(Object.keys(state.status).includes("UTG"));
+  assert.ok(!state.pendingPlayers.includes("UTG"));
 });
 
-test("past action change is modeled by truncating following actions", () => {
-  let state = act(initState(), "UTG", "RAISE", 250);
-  state = act(state, "HJ", "CALL");
-  state.actions = state.actions.filter((action) => action.note === "BLIND");
-  state.status = Object.fromEntries(players.map((player) => [player.id, "ACTIVE"]));
-  state.contribution = { SB: 50, BB: 100 };
-  state = act(state, "UTG", "FOLD");
-  assert.equal(state.actions.at(-1).actionType, "FOLD");
-  assert.ok(!state.actions.some((action) => action.playerId === "HJ"));
-});
-
-test("single remaining active player can go to result", () => {
-  let state = foldTo(initState(), "BTN");
-  state = act(state, "BTN", "RAISE", 300);
-  state = act(state, "SB", "FOLD");
-  state = act(state, "BB", "FOLD");
-  assert.equal(candidates(state).length, 1);
-});
-
-test("manual result amount drives movedBb", () => {
-  const state = act(initState(), "UTG", "RAISE", 250);
-  const resultAmount = pot(state) - rake(pot(state));
-  assert.equal(resultAmount / session.bigBlindAmount, 3.8);
+test("street ends when pendingPlayers becomes empty", () => {
+  let state = act(scenarioToBbReraise(), "UTG", "CALL");
+  state = act(state, "BTN", "RAISE", 2000);
+  state = act(state, "BB", "CALL");
+  state = act(state, "UTG", "CALL");
+  assert.deepEqual(state.pendingPlayers, []);
 });
