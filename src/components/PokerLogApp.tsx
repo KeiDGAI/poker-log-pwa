@@ -1150,10 +1150,10 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   const orderedPlayers = positionedPlayers(activePlayers, buttonSeat);
   const blinds = deriveButtonBlindSeats(activePlayers, buttonSeat);
   const preflopOrder = orderedPreflopPlayers(activePlayers, buttonSeat);
-  const bbPlayerId = activePlayers.find((player) => player.seatNumber === blinds.bbSeat)?.id;
   const usedCards = [...flop, ...turn, ...river, ...Object.values(showdownCards).flat()];
   const livePlayers = orderedPlayers.filter((player) => !hasFoldedBeforeStreet(player.id, actions, "showdown"));
   const currentFinalActions = [
+    ...blindActions(activePlayers, blinds, session),
     ...visibleActions("preflop"),
     ...actions.filter((action) => action.street !== "preflop"),
   ].map((action, index) => ({ ...action, order: index + 1 }));
@@ -1162,20 +1162,7 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   const winnerAmount = Math.max(0, currentPotAmount - currentRakeAmount);
 
   function visibleActions(street: Street) {
-    const explicit = actions.filter((action) => action.street === street);
-    if (street !== "preflop") return explicit;
-    const acted = new Set(explicit.map((action) => action.actorSessionPlayerId));
-    const defaults: HandAction[] = preflopOrder
-      .filter((player) => player.id !== bbPlayerId && !acted.has(player.id))
-      .map((player, index) => ({
-        id: `default-${player.id}`,
-        street: "preflop",
-        actorSessionPlayerId: player.id,
-        actionType: "fold",
-        note: "Fold",
-        order: index,
-      }));
-    return [...defaults, ...explicit].sort((a, b) => a.order - b.order);
+    return actions.filter((action) => action.street === street).sort((a, b) => a.order - b.order);
   }
 
   function playersForStreet(street: Street) {
@@ -1201,11 +1188,38 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   }
 
   function addAction(player: SessionPlayer, actionType: ActionType, amountInput = "", street = activeStreet) {
-    const amount = ["bet_raise", "allin", "call"].includes(actionType) ? parseAmount(amountInput, session.amountInputUnit) : undefined;
-    const position = positionMap.get(player.id);
-    const text = `${position || `Seat${player.seatNumber}`} ${player.displayName} ${actionLabels[actionType]}${amountInput.trim() ? ` ${amountInput.trim()}` : ""}`;
-    setActions((current) => [
-      ...current,
+    const orderPlayers = playersForStreet(street);
+    const playerIndex = orderPlayers.findIndex((item) => item.id === player.id);
+    const streetRank = ["preflop", "flop", "turn", "river", "showdown"] as Street[];
+    const streetIndex = streetRank.indexOf(street);
+    const prunedActions = actions.filter((action) => {
+      const actionStreetIndex = streetRank.indexOf(action.street);
+      if (actionStreetIndex > streetIndex) return false;
+      if (action.street !== street) return true;
+      const actorIndex = orderPlayers.findIndex((item) => item.id === action.actorSessionPlayerId);
+      return actorIndex !== -1 && actorIndex < playerIndex;
+    });
+    const autoFoldActions = skippedPlayersForAction(orderPlayers, prunedActions, street, player.id, actionType, session, blinds).map((skippedPlayer, index) => ({
+      id: uid(),
+      street,
+      actorSessionPlayerId: skippedPlayer.id,
+      actionType: "fold" as ActionType,
+      note: "[AUTO] Fold",
+      order: prunedActions.length + index + 1,
+    }));
+    const stateBeforeAction = streetState([...blindActions(activePlayers, blinds, session), ...prunedActions, ...autoFoldActions], street, session, blinds);
+    const currentContribution = stateBeforeAction.contributions.get(player.id) || 0;
+    const targetAmount = parseAmount(amountInput, session.amountInputUnit) || 0;
+    const amount = actionType === "call"
+      ? Math.max(0, stateBeforeAction.currentBet - currentContribution)
+      : actionType === "bet_raise"
+        ? Math.max(0, targetAmount - currentContribution)
+        : undefined;
+    const displayAmount = actionType === "call" ? amount : actionType === "bet_raise" ? targetAmount : undefined;
+    const text = `[USER] ${actionLabels[actionType]}${displayAmount ? ` ${formatShortAmount(displayAmount, session)}` : ""}`;
+    setActions([
+      ...prunedActions,
+      ...autoFoldActions,
       {
         id: uid(),
         street,
@@ -1213,9 +1227,9 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
         actionType,
         amount,
         note: text,
-        order: current.length + 1,
+        order: prunedActions.length + autoFoldActions.length + 1,
       },
-    ]);
+    ].map((action, index) => ({ ...action, order: index + 1 })));
     setActionTarget(null);
   }
 
@@ -1231,11 +1245,11 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
   async function saveGame() {
     const time = nowIso();
     const finalActions = [
+      ...blindActions(activePlayers, blinds, session),
       ...visibleActions("preflop"),
       ...actions.filter((action) => action.street !== "preflop"),
     ].map((action, index) => ({
       ...action,
-      id: action.id.startsWith("default-") ? uid() : action.id,
       order: index + 1,
     }));
     const potAmount = estimatePot(finalActions);
@@ -1366,7 +1380,7 @@ function SimpleGameInput({ session, players, games, onDone }: { session: Session
                         }} className={`grid grid-cols-[48px_1fr_auto] items-center gap-2 rounded-md px-2 py-1.5 text-left ${isCurrent ? "bg-amber-300 text-slate-950" : "bg-slate-800 text-slate-100"}`}>
                           <span className="rounded bg-slate-600 px-2 py-1 text-center text-xs font-black text-white">{positionMap.get(player.id) || "-"}</span>
                           <span className="truncate text-sm font-black">{player.displayName}{repeat ? " / 再アクション" : ""}</span>
-                          <span className={`text-sm font-black ${actionColor(latest?.actionType)}`}>{latest ? actionDisplay(latest, session) : player.id === bbPlayerId && street === "preflop" ? "" : "Fold"}</span>
+                          <span className={`text-sm font-black ${actionColor(latest?.actionType)}`}>{latest ? actionDisplay(latest, session) : "未入力"}</span>
                         </button>
                       );
                     })}
@@ -1439,6 +1453,98 @@ function isAllInBeforeStreet(playerId: string, actions: HandAction[], street: St
   return actions.some((action) => action.actorSessionPlayerId === playerId && action.actionType === "allin" && order.indexOf(action.street) < targetIndex);
 }
 
+function blindActions(players: SessionPlayer[], blinds: ReturnType<typeof deriveButtonBlindSeats>, session: Session): HandAction[] {
+  const actions: HandAction[] = [];
+  const sb = players.find((player) => player.seatNumber === blinds.sbSeat);
+  const bb = players.find((player) => player.seatNumber === blinds.bbSeat);
+  if (sb) {
+    actions.push({
+      id: `blind-sb-${sb.id}`,
+      street: "preflop",
+      actorSessionPlayerId: sb.id,
+      actionType: "blind",
+      amount: session.smallBlindAmount,
+      note: `[BLIND] SB ${formatShortAmount(session.smallBlindAmount, session)}`,
+      order: 0,
+    });
+  }
+  if (bb) {
+    actions.push({
+      id: `blind-bb-${bb.id}`,
+      street: "preflop",
+      actorSessionPlayerId: bb.id,
+      actionType: "blind",
+      amount: session.bigBlindAmount,
+      note: `[BLIND] BB ${formatShortAmount(session.bigBlindAmount, session)}`,
+      order: 1,
+    });
+  }
+  return actions;
+}
+
+function streetState(actions: HandAction[], street: Street, session: Session, blinds: ReturnType<typeof deriveButtonBlindSeats>) {
+  const contributions = new Map<string, number>();
+  let currentBet = street === "preflop" ? session.bigBlindAmount : 0;
+  const latestByPlayer = new Map<string, HandAction>();
+
+  if (street === "preflop") {
+    actions
+      .filter((action) => action.street === "preflop" && action.actionType === "blind")
+      .forEach((action) => contributions.set(action.actorSessionPlayerId, (contributions.get(action.actorSessionPlayerId) || 0) + (action.amount || 0)));
+  }
+
+  actions
+    .filter((action) => action.street === street && action.actionType !== "blind")
+    .sort((a, b) => a.order - b.order)
+    .forEach((action) => {
+      latestByPlayer.set(action.actorSessionPlayerId, action);
+      if (action.amount) {
+        const nextContribution = (contributions.get(action.actorSessionPlayerId) || 0) + action.amount;
+        contributions.set(action.actorSessionPlayerId, nextContribution);
+        if (action.actionType === "bet_raise" || action.actionType === "allin") currentBet = Math.max(currentBet, nextContribution);
+      }
+    });
+
+  if (street === "preflop" && !actions.some((action) => action.actionType === "blind")) {
+    if (blinds.sbSeat) currentBet = Math.max(currentBet, session.smallBlindAmount);
+    if (blinds.bbSeat) currentBet = Math.max(currentBet, session.bigBlindAmount);
+  }
+
+  return { currentBet, contributions, latestByPlayer };
+}
+
+function requiredPlayers(orderPlayers: SessionPlayer[], actions: HandAction[], street: Street, session: Session, blinds: ReturnType<typeof deriveButtonBlindSeats>) {
+  const state = streetState(actions, street, session, blinds);
+  const latestRaise = [...actions]
+    .filter((action) => action.street === street && (action.actionType === "bet_raise" || action.actionType === "allin"))
+    .sort((a, b) => a.order - b.order)
+    .at(-1);
+
+  return orderPlayers.filter((player) => {
+    const latest = state.latestByPlayer.get(player.id);
+    if (latest?.actionType === "fold" || latest?.actionType === "allin") return false;
+    if (!latest) return true;
+    if (!latestRaise || latestRaise.actorSessionPlayerId === player.id) return false;
+    return latest.order < latestRaise.order;
+  });
+}
+
+function skippedPlayersForAction(
+  orderPlayers: SessionPlayer[],
+  actions: HandAction[],
+  street: Street,
+  targetPlayerId: string,
+  actionType: ActionType,
+  session: Session,
+  blinds: ReturnType<typeof deriveButtonBlindSeats>
+) {
+  if (street !== "preflop" && actionType === "check") return [];
+  const targetIndex = orderPlayers.findIndex((player) => player.id === targetPlayerId);
+  if (targetIndex <= 0) return [];
+  const required = new Set(requiredPlayers(orderPlayers, actions, street, session, blinds).map((player) => player.id));
+  return orderPlayers.slice(0, targetIndex).filter((player) => required.has(player.id));
+}
+
 function foldedStreet(playerId: string, actions: HandAction[]) {
   return actions.find((action) => action.actorSessionPlayerId === playerId && action.actionType === "fold")?.street;
 }
@@ -1451,6 +1557,9 @@ function actionColor(type?: ActionType) {
 }
 
 function actionDisplay(action: HandAction, session: Session) {
+  if (action.note?.startsWith("[AUTO]")) return "Auto Fold";
+  if (action.note?.startsWith("[BLIND]")) return action.note.replace("[BLIND] ", "");
+  if (action.note?.startsWith("[USER]")) return action.note.replace("[USER] ", "");
   const amount = action.amount ? ` ${formatShortAmount(action.amount, session)}` : "";
   return `${actionLabels[action.actionType]}${amount}`;
 }
@@ -1476,12 +1585,12 @@ function ActionSheet({
   onAdd: (player: SessionPlayer, actionType: ActionType, amountInput?: string, street?: Street) => void;
 }) {
   const [amount, setAmount] = useState("");
+  const [pendingAction, setPendingAction] = useState<ActionType | null>(null);
   const player = players.find((item) => item.id === target?.playerId);
   if (!target || !player) return null;
   return (
     <BottomSheet title={`${player.displayName} ${streetLabels[target.street]}`} open onClose={onClose}>
       <div className="grid gap-2">
-        <AmountInput label="額入力（省略可）" value={amount} session={session} onChange={setAmount} />
         <div className="grid grid-cols-3 gap-2">
           {([
             ["fold", "Fold"],
@@ -1491,13 +1600,29 @@ function ActionSheet({
             ["allin", "All-in"],
           ] as [ActionType, string][]).map(([type, label]) => (
             <button key={type} type="button" onClick={() => {
-              onAdd(player, type, amount, target.street);
+              if (type === "bet_raise") {
+                setPendingAction(type);
+                return;
+              }
+              onAdd(player, type, "", target.street);
               setAmount("");
-            }} className="h-11 rounded-md border border-stone-200 bg-white text-sm font-black">
+            }} className={`h-11 rounded-md border text-sm font-black ${pendingAction === type ? "border-emerald-800 bg-emerald-800 text-white" : "border-stone-200 bg-white"}`}>
               {label}
             </button>
           ))}
         </div>
+        {pendingAction === "bet_raise" && (
+          <div className="grid gap-2">
+            <AmountInput label="Bet/Raise額（省略可）" value={amount} session={session} onChange={setAmount} />
+            <button type="button" onClick={() => {
+              onAdd(player, "bet_raise", amount, target.street);
+              setAmount("");
+              setPendingAction(null);
+            }} className="h-11 rounded-md bg-emerald-800 text-sm font-black text-white">
+              Bet/Raiseを保存
+            </button>
+          </div>
+        )}
       </div>
     </BottomSheet>
   );
