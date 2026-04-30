@@ -61,7 +61,7 @@ const positions = ["UTG", "UTG1", "UTG2", "LJ", "HJ", "CO", "BTN", "SB", "BB"];
 const streets: Street[] = ["preflop", "flop", "turn", "river"];
 const streetLabels: Record<Street, string> = { preflop: "PF", flop: "Flop", turn: "Turn", river: "River" };
 const preflopActions = ["Fold", "Limp", "Open", "Call", "3bet", "4bet", "All-in"];
-const postflopActions = ["Check", "Bet", "Call", "Raise", "All-in", "Fold"];
+const postflopActions = ["Check", "Call", "Raise", "All-in", "Fold"];
 const betSizes = ["33%", "50%", "75%", "100%", "120%", "More"];
 const boardTags = ["Wet", "Dry", "Two-tone", "Monotone", "Rainbow", "Paired", "Connected", "Flush draw"];
 const quickHands = ["AA", "KK", "QQ", "JJ", "TT", "AKs", "AKo", "AQs", "AQo", "AJs", "KQs", "QJs", "JTs", "T9s", "A5s"];
@@ -552,7 +552,7 @@ function LiveMode({ session, hand, onBack, onSave }: {
         id: uid(),
         position: selectedPosition,
         action,
-        size: activeStreet !== "preflop" && (action === "Bet" || action === "Raise") ? selectedSize : "",
+        size: activeStreet !== "preflop" && action === "Raise" ? selectedSize : "",
         street: activeStreet,
         order: current.actions[activeStreet].length + 1,
         createdAt: nowIso(),
@@ -791,7 +791,7 @@ function LiveMode({ session, hand, onBack, onSave }: {
           {activeStreet !== "preflop" && (
             <div className="mb-3 rounded-md border border-slate-700 bg-slate-900 p-3">
               <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs font-black uppercase text-slate-400">Bet / Raise size</p>
+                <p className="text-xs font-black uppercase text-slate-400">Raise size</p>
                 <button onClick={() => setSelectedSize("")} className="text-xs font-bold text-slate-400">No size</button>
               </div>
               <div className="grid grid-cols-6 gap-2">

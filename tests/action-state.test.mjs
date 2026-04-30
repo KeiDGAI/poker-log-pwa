@@ -158,7 +158,7 @@ test("bet amount is not required to save a useful hand note", () => {
   hand = appendAction(hand, "preflop", "BTN", "3bet");
   hand.board.flop = "A72";
   hand = appendAction(hand, "flop", "CO", "Check");
-  hand = appendAction(hand, "flop", "BTN", "Bet");
+  hand = appendAction(hand, "flop", "BTN", "Raise");
   hand.result = "Win";
   hand.amountMemo = "+4500";
 
@@ -209,13 +209,14 @@ test("board suits format only when supplied and tolerate incomplete flop suits",
   assert.equal(formatBoard(incomplete, "flop"), "9h 8h 6 (suit incomplete)");
 });
 
-test("postflop bet and raise can carry optional size labels", () => {
+test("postflop raise can carry optional size labels", () => {
   let hand = newHand();
-  hand = appendAction(hand, "flop", "BB", "Bet", "50%");
-  hand = appendAction(hand, "flop", "HJ", "Raise", "120%");
+  hand = appendAction(hand, "flop", "BB", "Raise", "50%");
+  hand = appendAction(hand, "turn", "HJ", "Raise", "120%");
   hand = appendAction(hand, "flop", "BB", "All-in");
 
-  assert.equal(actionsText(hand.actions.flop), "BB Bet 50% / HJ Raise 120% / BB All-in");
+  assert.equal(actionsText(hand.actions.flop), "BB Raise 50% / BB All-in");
+  assert.equal(actionsText(hand.actions.turn), "HJ Raise 120%");
 });
 
 test("session export includes session memo, player notes, and linked hands", () => {
@@ -232,7 +233,7 @@ test("session export includes session memo, player notes, and linked hands", () 
   hand = appendAction(hand, "preflop", "HJ", "Open");
   hand = appendAction(hand, "preflop", "BB", "3bet");
   hand = appendAction(hand, "preflop", "HJ", "Call");
-  hand = appendAction(hand, "flop", "BB", "Bet", "50%");
+  hand = appendAction(hand, "flop", "BB", "Raise", "50%");
   hand = appendAction(hand, "flop", "HJ", "Raise", "120%");
   hand.result = "Lose";
   hand.amountMemo = "-12000";
@@ -254,7 +255,7 @@ test("session export includes session memo, player notes, and linked hands", () 
   const text = buildExportText(session);
   assert.match(text, /Player Notes:\nBTN: コール多め/);
   assert.match(text, /PF: HJ Open \/ BB 3bet \/ HJ Call/);
-  assert.match(text, /Flop: 9h 8h 6d \/ BB Bet 50% \/ HJ Raise 120%/);
+  assert.match(text, /Flop: 9h 8h 6d \/ BB Raise 50% \/ HJ Raise 120%/);
   assert.match(text, /Turn: Kh/);
   assert.match(text, /River: 2c/);
   assert.match(text, /Board Tags: Wet \/ Two-tone \/ Connected/);
@@ -272,14 +273,14 @@ test("hand summary shows hero, board, actions, result, amount, and memo preview 
   hand = appendAction(hand, "preflop", "HJ", "Open");
   hand = appendAction(hand, "preflop", "BB", "3bet");
   hand = appendAction(hand, "preflop", "HJ", "Call");
-  hand = appendAction(hand, "flop", "BB", "Bet", "50%");
+  hand = appendAction(hand, "flop", "BB", "Raise", "50%");
   hand = appendAction(hand, "flop", "HJ", "Raise", "120%");
   hand.result = "Lose";
   hand.amountMemo = "-12000";
   hand.handMemo = "Q9に負け。完成ストレートを軽視。";
 
   assert.equal(handBoardSummary(hand), "Flop 9h 8h 6d / Turn K / River 2");
-  assert.equal(handActionSummary(hand), "PF HJ Open / BB 3bet / HJ Call | F BB Bet 50% / HJ Raise 120%");
+  assert.equal(handActionSummary(hand), "PF HJ Open / BB 3bet / HJ Call | F BB Raise 50% / HJ Raise 120%");
   assert.match(buildHandText(hand, 0), /#1 HJ \/ JJ/);
   assert.match(buildHandText(hand, 0), /Amount: -12000/);
   assert.match(buildHandText(hand, 0), /Memo: Q9に負け。完成ストレートを軽視。/);
@@ -289,7 +290,7 @@ test("all streets keep independent append-only logs", () => {
   let hand = newHand();
   for (const street of streets) {
     hand = appendAction(hand, street, "BB", street === "preflop" ? "Call" : "Check");
-    hand = appendAction(hand, street, "HJ", street === "preflop" ? "Open" : "Bet");
+    hand = appendAction(hand, street, "HJ", street === "preflop" ? "Open" : "Raise");
   }
 
   assert.equal(hand.actions.preflop.length, 2);
