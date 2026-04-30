@@ -52,13 +52,15 @@ type PokerSession = {
 };
 
 const STORAGE_KEY = "poker-log-fast-v1";
-const positions = ["UTG", "LJ", "HJ", "CO", "BTN", "SB", "BB"];
+const positions = ["UTG", "UTG1", "UTG2", "LJ", "HJ", "CO", "BTN", "SB", "BB"];
 const streets: Street[] = ["preflop", "flop", "turn", "river"];
 const streetLabels: Record<Street, string> = { preflop: "PF", flop: "Flop", turn: "Turn", river: "River" };
 const preflopActions = ["Fold", "Limp", "Open", "Call", "3bet", "4bet", "All-in"];
 const postflopActions = ["Check", "Bet", "Call", "Raise", "All-in", "Fold"];
 const quickHands = ["AA", "KK", "QQ", "JJ", "TT", "AKs", "AKo", "AQs", "AQo", "AJs", "KQs", "QJs", "JTs", "T9s", "A5s"];
 const ranks = ["A", "K", "Q", "J", "T", "9", "8", "7", "6", "5", "4", "3", "2"];
+const boardTargets = ["flop", "turn", "river"] as const;
+type BoardTarget = (typeof boardTargets)[number];
 const suits = [
   { code: "h", label: "♥", className: "text-red-500" },
   { code: "d", label: "♦", className: "text-blue-500" },
@@ -428,6 +430,7 @@ function LiveMode({ session, hand, onBack, onSave }: {
   const [rankTwo, setRankTwo] = useState("");
   const [exactMode, setExactMode] = useState(false);
   const [exactCardRank, setExactCardRank] = useState("");
+  const [boardTarget, setBoardTarget] = useState<BoardTarget>("flop");
 
   useEffect(() => {
     setDraft(hand ? structuredClone(hand) : newHand());
@@ -472,24 +475,30 @@ function LiveMode({ session, hand, onBack, onSave }: {
     setDraft((current) => ({ ...current, actions: { ...current.actions, [activeStreet]: [] } }));
   }
 
-  function chooseRank(rank: string) {
+  function chooseRankOne(rank: string) {
+    setRankOne(rank);
+    setRankTwo("");
+  }
+
+  function chooseRankTwo(rank: string) {
     if (!rankOne) {
       setRankOne(rank);
       return;
     }
     setRankTwo(rank);
-    if (rankOne === rank) {
-      patch({ heroHand: `${rank}${rank}` });
-      setRankOne("");
-      setRankTwo("");
-    }
+    if (rankOne === rank) patch({ heroHand: `${rank}${rank}`, exactHeroHand: "" });
   }
 
   function finishCombo(suffix: "s" | "o") {
     if (!rankOne || !rankTwo) return;
-    patch({ heroHand: `${rankOne}${rankTwo}${suffix}` });
+    patch({ heroHand: `${rankOne}${rankTwo}${suffix}`, exactHeroHand: "" });
+  }
+
+  function clearHeroHand() {
+    patch({ heroHand: "", exactHeroHand: "" });
     setRankOne("");
     setRankTwo("");
+    setExactCardRank("");
   }
 
   function chooseExactSuit(suit: string) {
@@ -499,6 +508,35 @@ function LiveMode({ session, hand, onBack, onSave }: {
     const next = [...existing.slice(-1), card].slice(-2);
     patch({ exactHeroHand: next.join(" "), heroHand: next.join("") });
     setExactCardRank("");
+  }
+
+  function appendBoardRank(rank: string) {
+    setDraft((current) => {
+      const currentValue = current.board[boardTarget] || "";
+      const maxLength = boardTarget === "flop" ? 3 : 1;
+      if (currentValue.length >= maxLength) return current;
+      return {
+        ...current,
+        updatedAt: nowIso(),
+        board: { ...current.board, [boardTarget]: `${currentValue}${rank}` },
+      };
+    });
+  }
+
+  function backspaceBoard() {
+    setDraft((current) => ({
+      ...current,
+      updatedAt: nowIso(),
+      board: { ...current.board, [boardTarget]: current.board[boardTarget].slice(0, -1) },
+    }));
+  }
+
+  function clearBoard(target?: BoardTarget) {
+    if (target) {
+      patchBoard({ [target]: "" });
+      return;
+    }
+    patchBoard({ flop: "", turn: "", river: "" });
   }
 
   function save(makeNew: boolean) {
@@ -520,22 +558,31 @@ function LiveMode({ session, hand, onBack, onSave }: {
             <p className="text-xs font-black uppercase text-slate-300">Hero Hand</p>
             <p className="text-lg font-black text-emerald-300">{draft.heroHand || "-"}</p>
           </div>
-          <div className="grid grid-cols-5 gap-2">
-            {quickHands.map((item) => <button key={item} onClick={() => patch({ heroHand: item })} className="tap-chip">{item}</button>)}
+          <div className="mb-3 grid grid-cols-3 gap-2">
+            <button onClick={clearHeroHand} className="tap-small bg-red-950 text-red-200">Clear Hero Hand</button>
+            <button onClick={() => { setRankOne(""); setRankTwo(""); }} className="tap-small bg-slate-700">Re-select</button>
+            <button onClick={() => setExactMode((value) => !value)} className="tap-small bg-slate-700">Edit Exact</button>
           </div>
-          <details className="mt-3">
-            <summary className="cursor-pointer text-sm font-bold text-slate-300">Normal hand picker</summary>
-            <div className="mt-3 grid grid-cols-7 gap-2">
-              {ranks.map((rank) => <button key={rank} onClick={() => chooseRank(rank)} className={`tap-chip ${rankOne === rank || rankTwo === rank ? "bg-emerald-500 text-slate-950" : ""}`}>{rank}</button>)}
+          <div className="rounded-md border border-slate-700 bg-slate-900 p-3">
+            <p className="mb-2 text-xs font-black uppercase text-slate-400">Rank 1 {rankOne && <span className="text-emerald-300">/ {rankOne}</span>}</p>
+            <div className="grid grid-cols-7 gap-2">
+              {ranks.map((rank) => <button key={`r1-${rank}`} onClick={() => chooseRankOne(rank)} className={`tap-chip ${rankOne === rank ? "bg-emerald-500 text-slate-950" : ""}`}>{rank}</button>)}
+            </div>
+            <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-400">Rank 2 {rankTwo && <span className="text-emerald-300">/ {rankTwo}</span>}</p>
+            <div className="grid grid-cols-7 gap-2">
+              {ranks.map((rank) => <button key={`r2-${rank}`} onClick={() => chooseRankTwo(rank)} className={`tap-chip ${rankTwo === rank ? "bg-emerald-500 text-slate-950" : ""}`}>{rank}</button>)}
             </div>
             {rankOne && rankTwo && rankOne !== rankTwo && (
               <div className="mt-3 grid grid-cols-2 gap-2">
-                <button onClick={() => finishCombo("s")} className="tap-btn bg-emerald-600 text-slate-950">Suited</button>
-                <button onClick={() => finishCombo("o")} className="tap-btn bg-slate-700">Offsuit</button>
+                <button onClick={() => finishCombo("s")} className="tap-btn bg-emerald-600 text-slate-950">suited = {rankOne}{rankTwo}s</button>
+                <button onClick={() => finishCombo("o")} className="tap-btn bg-slate-700">offsuit = {rankOne}{rankTwo}o</button>
               </div>
             )}
-          </details>
-          <button onClick={() => setExactMode((value) => !value)} className="mt-3 tap-small bg-slate-700">Exact hand {exactMode ? "close" : "input"}</button>
+          </div>
+          <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-400">Quick buttons</p>
+          <div className="grid grid-cols-5 gap-2">
+            {quickHands.map((item) => <button key={item} onClick={() => { patch({ heroHand: item, exactHeroHand: "" }); setRankOne(""); setRankTwo(""); }} className="tap-chip">{item}</button>)}
+          </div>
           {exactMode && (
             <div className="mt-3 rounded-md bg-slate-900 p-3">
               <p className="mb-2 text-sm font-bold">Exact: {draft.exactHeroHand || "-"}</p>
@@ -551,10 +598,25 @@ function LiveMode({ session, hand, onBack, onSave }: {
 
         <div className="rounded-lg bg-slate-800 p-3">
           <p className="mb-2 text-xs font-black uppercase text-slate-300">Board</p>
+          <div className="mb-3 grid grid-cols-3 gap-2">
+            {boardTargets.map((target) => (
+              <button key={target} onClick={() => setBoardTarget(target)} className={`tap-btn ${boardTarget === target ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>
+                {target === "flop" ? "Flop" : target === "turn" ? "Turn" : "River"} {draft.board[target] || ""}
+              </button>
+            ))}
+          </div>
+          <div className="mb-3 grid grid-cols-7 gap-2">
+            {ranks.map((rank) => <button key={`board-${rank}`} onClick={() => appendBoardRank(rank)} className="tap-chip">{rank}</button>)}
+          </div>
           <div className="grid grid-cols-3 gap-2">
             <input className="fast-input" value={draft.board.flop} onChange={(event) => patchBoard({ flop: event.target.value })} placeholder="Flop 986" />
             <input className="fast-input" value={draft.board.turn} onChange={(event) => patchBoard({ turn: event.target.value })} placeholder="Turn A" />
             <input className="fast-input" value={draft.board.river} onChange={(event) => patchBoard({ river: event.target.value })} placeholder="River 2" />
+          </div>
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            <button onClick={backspaceBoard} className="tap-small bg-slate-700">Delete last</button>
+            <button onClick={() => clearBoard(boardTarget)} className="tap-small bg-red-950 text-red-200">Clear {boardTarget}</button>
+            <button onClick={() => clearBoard()} className="tap-small bg-red-950 text-red-200">Clear Board</button>
           </div>
         </div>
 

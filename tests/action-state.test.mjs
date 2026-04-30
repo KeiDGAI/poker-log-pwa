@@ -33,6 +33,22 @@ function appendAction(hand, street, position, action) {
   };
 }
 
+function selectHeroHand(rankOne, rankTwo, suitedness = "") {
+  if (rankOne === rankTwo) return `${rankOne}${rankTwo}`;
+  return `${rankOne}${rankTwo}${suitedness}`;
+}
+
+function appendBoardRank(board, target, rank) {
+  const maxLength = target === "flop" ? 3 : 1;
+  if (board[target].length >= maxLength) return board;
+  return { ...board, [target]: `${board[target]}${rank}` };
+}
+
+function clearBoard(board, target) {
+  if (!target) return { flop: "", turn: "", river: "" };
+  return { ...board, [target]: "" };
+}
+
 function actionsText(actions) {
   return actions.map((item) => `${item.position} ${item.action}`).join(" / ");
 }
@@ -95,6 +111,26 @@ test("bet amount is not required to save a useful hand note", () => {
   assert.equal(hand.heroPosition, "BTN");
   assert.equal(hand.actions.flop.length, 2);
   assert.equal(hand.amountMemo, "+4500");
+});
+
+test("hero hand supports rank1 rank2 suitedness and pair auto-complete", () => {
+  assert.equal(selectHeroHand("A", "K", "s"), "AKs");
+  assert.equal(selectHeroHand("A", "K", "o"), "AKo");
+  assert.equal(selectHeroHand("J", "J"), "JJ");
+  assert.equal(selectHeroHand("7", "7"), "77");
+});
+
+test("board rank buttons append and clear without keyboard input", () => {
+  let board = { flop: "", turn: "", river: "" };
+  board = appendBoardRank(board, "flop", "A");
+  board = appendBoardRank(board, "flop", "J");
+  board = appendBoardRank(board, "flop", "7");
+  board = appendBoardRank(board, "turn", "K");
+  board = appendBoardRank(board, "river", "2");
+
+  assert.deepEqual(board, { flop: "AJ7", turn: "K", river: "2" });
+  assert.equal(clearBoard(board, "flop").flop, "");
+  assert.deepEqual(clearBoard(board), { flop: "", turn: "", river: "" });
 });
 
 test("session export includes session memo, player notes, and linked hands", () => {
