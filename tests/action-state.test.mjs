@@ -76,6 +76,36 @@ function actionsText(actions) {
   return actions.map((item) => `${item.position} ${item.action}${item.size ? ` ${item.size}` : ""}`).join(" / ");
 }
 
+function handBoardSummary(hand) {
+  const items = [
+    formatBoard(hand, "flop") ? `Flop ${formatBoard(hand, "flop")}` : "",
+    formatBoard(hand, "turn") ? `Turn ${formatBoard(hand, "turn")}` : "",
+    formatBoard(hand, "river") ? `River ${formatBoard(hand, "river")}` : "",
+  ].filter(Boolean);
+  return items.join(" / ") || "-";
+}
+
+function handActionSummary(hand) {
+  const items = [
+    actionsText(hand.actions.preflop) ? `PF ${actionsText(hand.actions.preflop)}` : "",
+    actionsText(hand.actions.flop) ? `F ${actionsText(hand.actions.flop)}` : "",
+    actionsText(hand.actions.turn) ? `T ${actionsText(hand.actions.turn)}` : "",
+    actionsText(hand.actions.river) ? `R ${actionsText(hand.actions.river)}` : "",
+  ].filter(Boolean);
+  return items.join(" | ") || "-";
+}
+
+function buildHandText(hand, index) {
+  return [
+    `#${index + 1} ${hand.heroPosition || "-"} / ${hand.heroHand || "-"}`,
+    `Board: ${handBoardSummary(hand)}`,
+    `Action: ${handActionSummary(hand)}`,
+    `Result: ${hand.result || "-"}`,
+    `Amount: ${hand.amountMemo || "-"}`,
+    `Memo: ${hand.handMemo || "-"}`,
+  ].join("\n");
+}
+
 function buildExportText(session) {
   return [
     "Session:",
@@ -229,6 +259,30 @@ test("session export includes session memo, player notes, and linked hands", () 
   assert.match(text, /River: 2c/);
   assert.match(text, /Board Tags: Wet \/ Two-tone \/ Connected/);
   assert.match(text, /Amount: -12000/);
+});
+
+test("hand summary shows hero, board, actions, result, amount, and memo preview content", () => {
+  let hand = newHand();
+  hand.heroPosition = "HJ";
+  hand.heroHand = "JJ";
+  hand.board.flop = "986";
+  hand.board.flopSuits = "hhd";
+  hand.board.turn = "K";
+  hand.board.river = "2";
+  hand = appendAction(hand, "preflop", "HJ", "Open");
+  hand = appendAction(hand, "preflop", "BB", "3bet");
+  hand = appendAction(hand, "preflop", "HJ", "Call");
+  hand = appendAction(hand, "flop", "BB", "Bet", "50%");
+  hand = appendAction(hand, "flop", "HJ", "Raise", "120%");
+  hand.result = "Lose";
+  hand.amountMemo = "-12000";
+  hand.handMemo = "Q9に負け。完成ストレートを軽視。";
+
+  assert.equal(handBoardSummary(hand), "Flop 9h 8h 6d / Turn K / River 2");
+  assert.equal(handActionSummary(hand), "PF HJ Open / BB 3bet / HJ Call | F BB Bet 50% / HJ Raise 120%");
+  assert.match(buildHandText(hand, 0), /#1 HJ \/ JJ/);
+  assert.match(buildHandText(hand, 0), /Amount: -12000/);
+  assert.match(buildHandText(hand, 0), /Memo: Q9に負け。完成ストレートを軽視。/);
 });
 
 test("all streets keep independent append-only logs", () => {

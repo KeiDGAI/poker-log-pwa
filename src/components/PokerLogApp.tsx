@@ -151,6 +151,46 @@ function formatBoard(hand: HandNote, street: BoardTarget) {
   return formatBoardCards(hand.board.river, hand.board.riverSuit || "");
 }
 
+function handHeroSummary(hand: HandNote) {
+  return `${hand.heroPosition || "-"} / ${hand.heroHand || "-"}`;
+}
+
+function handBoardSummary(hand: HandNote) {
+  const items = [
+    formatBoard(hand, "flop") ? `Flop ${formatBoard(hand, "flop")}` : "",
+    formatBoard(hand, "turn") ? `Turn ${formatBoard(hand, "turn")}` : "",
+    formatBoard(hand, "river") ? `River ${formatBoard(hand, "river")}` : "",
+  ].filter(Boolean);
+  return items.join(" / ") || "-";
+}
+
+function handActionSummary(hand: HandNote) {
+  const items = [
+    actionsText(hand.actions.preflop) ? `PF ${actionsText(hand.actions.preflop)}` : "",
+    actionsText(hand.actions.flop) ? `F ${actionsText(hand.actions.flop)}` : "",
+    actionsText(hand.actions.turn) ? `T ${actionsText(hand.actions.turn)}` : "",
+    actionsText(hand.actions.river) ? `R ${actionsText(hand.actions.river)}` : "",
+  ].filter(Boolean);
+  return items.join(" | ") || "-";
+}
+
+function handMemoPreview(hand: HandNote) {
+  const memo = hand.handMemo.trim();
+  if (!memo) return "-";
+  return memo.length > 80 ? `${memo.slice(0, 80)}...` : memo;
+}
+
+function buildHandText(hand: HandNote, index?: number) {
+  return [
+    index !== undefined ? `#${index + 1} ${handHeroSummary(hand)}` : `Hero: ${handHeroSummary(hand)}`,
+    `Board: ${handBoardSummary(hand)}`,
+    `Action: ${handActionSummary(hand)}`,
+    `Result: ${hand.result || "-"}`,
+    `Amount: ${hand.amountMemo || "-"}`,
+    `Memo: ${hand.handMemo || "-"}`,
+  ].join("\n");
+}
+
 export function buildExportText(session: PokerSession, mode: "all" | "summary" | "hands" = "all") {
   const sessionText = [
     "Session:",
@@ -174,7 +214,7 @@ export function buildExportText(session: PokerSession, mode: "all" | "summary" |
     ...session.hands.map((hand, index) => [
       "",
       `${index + 1})`,
-      `Hero: ${hand.heroPosition || "-"} / ${hand.heroHand || "-"}${hand.exactHeroHand ? ` (${hand.exactHeroHand})` : ""}`,
+      `Hero: ${handHeroSummary(hand)}${hand.exactHeroHand ? ` (${hand.exactHeroHand})` : ""}`,
       `PF: ${actionsText(hand.actions.preflop)}`,
       `Flop: ${formatBoard(hand, "flop")}${hand.board.flop ? " / " : ""}${actionsText(hand.actions.flop)}`,
       `Turn: ${formatBoard(hand, "turn")}${hand.board.turn ? " / " : ""}${actionsText(hand.actions.turn)}`,
@@ -279,6 +319,22 @@ export function PokerLogApp() {
     upsertSession({ ...currentSession, hands: currentSession.hands.filter((hand) => hand.id !== handId) });
   }
 
+  function duplicateHand(handId: string) {
+    if (!currentSession) return;
+    const sourceIndex = currentSession.hands.findIndex((hand) => hand.id === handId);
+    if (sourceIndex === -1) return;
+    const time = nowIso();
+    const copy: HandNote = {
+      ...structuredClone(currentSession.hands[sourceIndex]),
+      id: uid(),
+      createdAt: time,
+      updatedAt: time,
+    };
+    const hands = [...currentSession.hands];
+    hands.splice(sourceIndex + 1, 0, copy);
+    upsertSession({ ...currentSession, hands });
+  }
+
   if (!loaded) return <Shell><p className="p-6 text-slate-300">Loading...</p></Shell>;
 
   return (
@@ -302,6 +358,7 @@ export function PokerLogApp() {
           onDelete={() => deleteSession(currentSession.id)}
           onEditHand={(id) => openLive(id)}
           onDeleteHand={deleteHand}
+          onDuplicateHand={duplicateHand}
         />
       )}
       {screen === "live" && currentSession && (
@@ -377,7 +434,7 @@ function SessionList({ sessions, onNew, onOpen, onDelete, onExport }: {
   );
 }
 
-function SessionDetail({ session, onBack, onChange, onLive, onExport, onDelete, onEditHand, onDeleteHand }: {
+function SessionDetail({ session, onBack, onChange, onLive, onExport, onDelete, onEditHand, onDeleteHand, onDuplicateHand }: {
   session: PokerSession;
   onBack: () => void;
   onChange: (session: PokerSession) => void;
@@ -386,8 +443,17 @@ function SessionDetail({ session, onBack, onChange, onLive, onExport, onDelete, 
   onDelete: () => void;
   onEditHand: (id: string) => void;
   onDeleteHand: (id: string) => void;
+  onDuplicateHand: (id: string) => void;
 }) {
   const update = (patch: Partial<PokerSession>) => onChange({ ...session, ...patch });
+  const [copiedHandId, setCopiedHandId] = useState("");
+
+  async function copyHandText(hand: HandNote, index: number) {
+    await navigator.clipboard.writeText(buildHandText(hand, index));
+    setCopiedHandId(hand.id);
+    setTimeout(() => setCopiedHandId(""), 1200);
+  }
+
   return (
     <div className="pb-28">
       <Header title="Session Detail" subtitle={`${session.hands.length} hands`} action={<button onClick={onBack} className="tap-small bg-slate-800">List</button>} />
@@ -416,17 +482,26 @@ function SessionDetail({ session, onBack, onChange, onLive, onExport, onDelete, 
           <h2 className="mb-2 text-sm font-black text-slate-300">Hands</h2>
           <div className="space-y-2">
             {session.hands.map((hand, index) => (
-              <article key={hand.id} className="rounded-lg bg-slate-800 p-3">
+              <article key={hand.id} className="rounded-lg border border-slate-700 bg-slate-800 p-3">
                 <button onClick={() => onEditHand(hand.id)} className="block w-full text-left">
-                  <div className="flex justify-between gap-2">
-                    <p className="font-black">{index + 1}) {hand.heroPosition || "-"} / {hand.heroHand || "-"}</p>
-                    <p className="text-sm font-bold text-emerald-300">{hand.result || "-"}</p>
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-black">#{index + 1} {handHeroSummary(hand)}</p>
+                    <div className="text-right">
+                      <p className="text-sm font-bold text-emerald-300">{hand.result || "-"}</p>
+                      <p className="text-xs font-bold text-slate-400">{hand.amountMemo || "-"}</p>
+                    </div>
                   </div>
-                  <p className="mt-1 truncate text-sm text-slate-300">PF: {actionsText(hand.actions.preflop)}</p>
-                  <p className="truncate text-sm text-slate-400">Board: {[formatBoard(hand, "flop"), formatBoard(hand, "turn"), formatBoard(hand, "river")].filter(Boolean).join(" / ") || "-"}</p>
+                  <div className="mt-3 space-y-1 text-sm leading-snug">
+                    <p className="text-slate-300"><span className="font-black text-slate-500">Board:</span> {handBoardSummary(hand)}</p>
+                    <p className="whitespace-normal break-words text-slate-200"><span className="font-black text-slate-500">Action:</span> {handActionSummary(hand)}</p>
+                    <p className="text-slate-300"><span className="font-black text-slate-500">Result:</span> {hand.result || "-"} <span className="ml-2 font-black text-slate-500">Amount:</span> {hand.amountMemo || "-"}</p>
+                    <p className="text-slate-400"><span className="font-black text-slate-500">Memo:</span> {handMemoPreview(hand)}</p>
+                  </div>
                 </button>
-                <div className="mt-2 flex gap-2">
+                <div className="mt-3 grid grid-cols-4 gap-2">
                   <button onClick={() => onEditHand(hand.id)} className="tap-small bg-slate-700">Edit</button>
+                  <button onClick={() => onDuplicateHand(hand.id)} className="tap-small bg-slate-700">Duplicate</button>
+                  <button onClick={() => copyHandText(hand, index)} className="tap-small bg-slate-700">{copiedHandId === hand.id ? "Copied" : "Copy"}</button>
                   <button onClick={() => onDeleteHand(hand.id)} className="tap-small bg-red-950 text-red-200">Delete</button>
                 </div>
               </article>
