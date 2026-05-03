@@ -528,6 +528,16 @@ function LiveMode({ session, hand, onBack, onSave }: {
   const [exactCardRank, setExactCardRank] = useState("");
   const [boardTarget, setBoardTarget] = useState<BoardTarget>("flop");
   const [selectedSize, setSelectedSize] = useState("");
+  const [openSections, setOpenSections] = useState({
+    action: true,
+    board: true,
+    heroHand: false,
+    heroPosition: false,
+    result: false,
+  });
+  const [openBoardSuit, setOpenBoardSuit] = useState(false);
+  const [openBoardTags, setOpenBoardTags] = useState(false);
+  const [openQuickHands, setOpenQuickHands] = useState(false);
 
   useEffect(() => {
     setDraft(hand ? structuredClone(hand) : newHand());
@@ -678,141 +688,220 @@ function LiveMode({ session, hand, onBack, onSave }: {
     if (makeNew) setDraft(newHand());
   }
 
+  function toggleSection(key: keyof typeof openSections) {
+    setOpenSections((current) => ({ ...current, [key]: !current[key] }));
+  }
+
+  const actionSummary = (() => {
+    const latestByStreet = [...streets]
+      .reverse()
+      .map((street) => draft.actions[street][draft.actions[street].length - 1])
+      .find(Boolean);
+    if (!latestByStreet) return "Not set";
+    const total = streets.reduce((sum, street) => sum + draft.actions[street].length, 0);
+    return `Last: ${latestByStreet.position} ${latestByStreet.action}${latestByStreet.size ? ` ${latestByStreet.size}` : ""} (${total} actions)`;
+  })();
+  const boardSummary = handBoardSummary(draft);
+  const boardExtraSummary = [
+    draft.board.flopSuits ? `Flop suit ${draft.board.flopSuits}` : "",
+    draft.board.turnSuit ? `Turn suit ${draft.board.turnSuit}` : "",
+    draft.board.riverSuit ? `River suit ${draft.board.riverSuit}` : "",
+    (draft.board.tags || []).length ? `Tags: ${(draft.board.tags || []).join(" / ")}` : "",
+  ].filter(Boolean).join(" | ");
+  const heroHandSummary = draft.heroHand || "Not set";
+  const heroPositionSummary = draft.heroPosition || "Not set";
+  const resultSummary = `${draft.result || "-"} / ${draft.amountMemo || "-"} / ${draft.handMemo.trim() ? "memoあり" : "-"}`;
+
+  function SectionHeader({ title, summary, open, onClick }: { title: string; summary: string; open: boolean; onClick: () => void }) {
+    return (
+      <button onClick={onClick} className="mb-3 flex w-full items-center justify-between rounded-md bg-slate-900 p-3 text-left">
+        <div>
+          <p className="text-xs font-black uppercase text-slate-400">{title}</p>
+          <p className="text-sm font-bold text-emerald-300">{summary}</p>
+        </div>
+        <span className="text-xs font-black text-slate-300">{open ? "Hide" : "Show"}</span>
+      </button>
+    );
+  }
+
   return (
     <div className="pb-28">
       <Header title="Live Mode" subtitle={`${formatDate(session.dateTime)} / ${session.place || "No place"}`} action={<button onClick={onBack} className="tap-small bg-slate-800">Session</button>} />
       <section className="space-y-4 p-4">
-        <div className="rounded-lg border border-emerald-700 bg-emerald-950/40 p-3">
-          <p className="mb-2 text-xs font-black uppercase text-emerald-300">Hero Position</p>
-          <ButtonGrid items={positions} selected={draft.heroPosition} onPick={(value) => patch({ heroPosition: value })} />
-        </div>
-
-        <div className="rounded-lg bg-slate-800 p-3">
-          <div className="mb-2 flex items-center justify-between">
-            <p className="text-xs font-black uppercase text-slate-300">Hero Hand</p>
-            <p className="text-lg font-black text-emerald-300">{draft.heroHand || "-"}</p>
-          </div>
-          <div className="mb-3 grid grid-cols-3 gap-2">
-            <button onClick={clearHeroHand} className="tap-small bg-red-950 text-red-200">Clear Hero Hand</button>
-            <button onClick={() => { setRankOne(""); setRankTwo(""); }} className="tap-small bg-slate-700">Re-select</button>
-            <button onClick={() => setExactMode((value) => !value)} className="tap-small bg-slate-700">Edit Exact</button>
-          </div>
-          <div className="rounded-md border border-slate-700 bg-slate-900 p-3">
-            <p className="mb-2 text-xs font-black uppercase text-slate-400">Rank 1 {rankOne && <span className="text-emerald-300">/ {rankOne}</span>}</p>
-            <div className="grid grid-cols-7 gap-2">
-              {ranks.map((rank) => <button key={`r1-${rank}`} onClick={() => chooseRankOne(rank)} className={`tap-chip ${rankOne === rank ? "bg-emerald-500 text-slate-950" : ""}`}>{rank}</button>)}
-            </div>
-            <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-400">Rank 2 {rankTwo && <span className="text-emerald-300">/ {rankTwo}</span>}</p>
-            <div className="grid grid-cols-7 gap-2">
-              {ranks.map((rank) => <button key={`r2-${rank}`} onClick={() => chooseRankTwo(rank)} className={`tap-chip ${rankTwo === rank ? "bg-emerald-500 text-slate-950" : ""}`}>{rank}</button>)}
-            </div>
-            {rankOne && rankTwo && rankOne !== rankTwo && (
-              <div className="mt-3 grid grid-cols-2 gap-2">
-                <button onClick={() => finishCombo("s")} className="tap-btn bg-emerald-600 text-slate-950">suited = {rankOne}{rankTwo}s</button>
-                <button onClick={() => finishCombo("o")} className="tap-btn bg-slate-700">offsuit = {rankOne}{rankTwo}o</button>
-              </div>
-            )}
-          </div>
-          <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-400">Quick buttons</p>
-          <div className="grid grid-cols-5 gap-2">
-            {quickHands.map((item) => <button key={item} onClick={() => { patch({ heroHand: item, exactHeroHand: "" }); setRankOne(""); setRankTwo(""); }} className="tap-chip">{item}</button>)}
-          </div>
-          {exactMode && (
-            <div className="mt-3 rounded-md bg-slate-900 p-3">
-              <p className="mb-2 text-sm font-bold">Exact: {draft.exactHeroHand || "-"}</p>
-              <div className="grid grid-cols-7 gap-2">
-                {ranks.map((rank) => <button key={rank} onClick={() => setExactCardRank(rank)} className={`tap-chip ${exactCardRank === rank ? "bg-amber-300 text-slate-950" : ""}`}>{rank}</button>)}
-              </div>
-              <div className="mt-2 grid grid-cols-4 gap-2">
-                {suits.map((suit) => <button key={suit.code} onClick={() => chooseExactSuit(suit.code)} className={`tap-btn bg-white ${suit.className}`}>{suit.label}</button>)}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="rounded-lg bg-slate-800 p-3">
-          <p className="mb-2 text-xs font-black uppercase text-slate-300">Board</p>
-          <div className="mb-3 grid grid-cols-3 gap-2">
-            {boardTargets.map((target) => (
-              <button key={target} onClick={() => setBoardTarget(target)} className={`tap-btn ${boardTarget === target ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>
-                {target === "flop" ? "Flop" : target === "turn" ? "Turn" : "River"} {formatBoard(draft, target) || ""}
-              </button>
-            ))}
-          </div>
-          <div className="mb-3 grid grid-cols-7 gap-2">
-            {ranks.map((rank) => <button key={`board-${rank}`} onClick={() => appendBoardRank(rank)} className="tap-chip">{rank}</button>)}
-          </div>
-          <div className="mb-3 rounded-md border border-slate-700 bg-slate-900 p-3">
-            <div className="mb-2 flex items-center justify-between gap-2">
-              <p className="text-xs font-black uppercase text-slate-400">
-                {boardTarget === "flop" ? "Flop suit pattern" : `${boardTarget} suit`}
-                <span className="ml-2 text-emerald-300">
-                  {boardTarget === "flop" ? draft.board.flopSuits || "-" : boardTarget === "turn" ? draft.board.turnSuit || "-" : draft.board.riverSuit || "-"}
-                </span>
-              </p>
-              {boardTarget === "flop" && draft.board.flopSuits && draft.board.flopSuits.length !== draft.board.flop.length && <span className="text-xs font-bold text-amber-300">suit incomplete</span>}
-            </div>
-            <div className="grid grid-cols-4 gap-2">
-              {["s", "h", "d", "c"].map((suit) => <button key={`board-suit-${suit}`} onClick={() => appendBoardSuit(suit)} className="tap-btn bg-slate-700">{suit}</button>)}
-            </div>
-            <div className="mt-2 grid grid-cols-2 gap-2">
-              <button onClick={backspaceSuit} className="tap-small bg-slate-700">Backspace suit</button>
-              <button onClick={clearFlopSuits} className="tap-small bg-red-950 text-red-200">Clear Flop Suits</button>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 gap-2">
-            <input className="fast-input" value={draft.board.flop} onChange={(event) => patchBoard({ flop: event.target.value })} placeholder="Flop 986" />
-            <input className="fast-input" value={draft.board.turn} onChange={(event) => patchBoard({ turn: event.target.value })} placeholder="Turn A" />
-            <input className="fast-input" value={draft.board.river} onChange={(event) => patchBoard({ river: event.target.value })} placeholder="River 2" />
-          </div>
-          <div className="mt-3 grid grid-cols-3 gap-2">
-            <button onClick={backspaceBoard} className="tap-small bg-slate-700">Delete last</button>
-            <button onClick={() => clearBoard(boardTarget)} className="tap-small bg-red-950 text-red-200">Clear {boardTarget}</button>
-            <button onClick={() => clearBoard()} className="tap-small bg-red-950 text-red-200">Clear Board</button>
-          </div>
-          <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-300">Board texture</p>
-          <div className="grid grid-cols-4 gap-2">
-            {boardTags.map((tag) => (
-              <button key={tag} onClick={() => toggleBoardTag(tag)} className={`tap-small ${(draft.board.tags || []).includes(tag) ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>{tag}</button>
-            ))}
-          </div>
-        </div>
-
         <div className="rounded-lg border border-slate-700 bg-slate-800 p-3">
-          <div className="grid grid-cols-4 gap-2">
-            {streets.map((street) => <button key={street} onClick={() => setActiveStreet(street)} className={`tap-btn ${activeStreet === street ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>{streetLabels[street]}</button>)}
-          </div>
-          <div className="mt-3 rounded-md bg-slate-950 p-3">
-            <p className="text-sm font-black text-emerald-300">{streetLabels[activeStreet]}: {actionsText(draft.actions[activeStreet]) || "-"}</p>
-          </div>
-          <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-300">Position</p>
-          <ButtonGrid items={positions} selected={selectedPosition} onPick={setSelectedPosition} />
-          <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-300">Action</p>
-          {activeStreet !== "preflop" && (
-            <div className="mb-3 rounded-md border border-slate-700 bg-slate-900 p-3">
-              <div className="mb-2 flex items-center justify-between">
-                <p className="text-xs font-black uppercase text-slate-400">Raise size</p>
-                <button onClick={() => setSelectedSize("")} className="text-xs font-bold text-slate-400">No size</button>
+          <SectionHeader title="Action" summary={actionSummary} open={openSections.action} onClick={() => toggleSection("action")} />
+          {openSections.action && (
+            <>
+              <div className="grid grid-cols-4 gap-2">
+                {streets.map((street) => <button key={street} onClick={() => setActiveStreet(street)} className={`tap-btn ${activeStreet === street ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>{streetLabels[street]}</button>)}
               </div>
-              <div className="grid grid-cols-6 gap-2">
-                {betSizes.map((size) => <button key={size} onClick={() => setSelectedSize(size)} className={`tap-small ${selectedSize === size ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>{size}</button>)}
+              <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-300">Position</p>
+              <ButtonGrid items={positions} selected={selectedPosition} onPick={setSelectedPosition} />
+              <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-300">Action</p>
+              {activeStreet !== "preflop" && (
+                <div className="mb-3 rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <div className="mb-2 flex items-center justify-between">
+                    <p className="text-xs font-black uppercase text-slate-400">Raise size</p>
+                    <button onClick={() => setSelectedSize("")} className="text-xs font-bold text-slate-400">No size</button>
+                  </div>
+                  <div className="grid grid-cols-6 gap-2">
+                    {betSizes.map((size) => <button key={size} onClick={() => setSelectedSize(size)} className={`tap-small ${selectedSize === size ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>{size}</button>)}
+                  </div>
+                </div>
+              )}
+              <div className="grid grid-cols-3 gap-2">
+                {actions.map((action) => <button key={action} onClick={() => appendAction(action)} className="tap-btn bg-slate-700">{action}</button>)}
               </div>
-            </div>
+              <div className="mt-3 rounded-md bg-slate-950 p-3">
+                <p className="text-sm font-black text-emerald-300">{streetLabels[activeStreet]}: {actionsText(draft.actions[activeStreet]) || "-"}</p>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                <button onClick={undoAction} className="tap-btn bg-slate-700"><Undo2 size={18} /> Undo last</button>
+                <button onClick={clearStreet} className="tap-btn bg-red-950 text-red-200">Clear street</button>
+              </div>
+            </>
           )}
-          <div className="grid grid-cols-3 gap-2">
-            {actions.map((action) => <button key={action} onClick={() => appendAction(action)} className="tap-btn bg-slate-700">{action}</button>)}
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <button onClick={undoAction} className="tap-btn bg-slate-700"><Undo2 size={18} /> Undo last</button>
-            <button onClick={clearStreet} className="tap-btn bg-red-950 text-red-200">Clear street</button>
-          </div>
         </div>
 
         <div className="rounded-lg bg-slate-800 p-3">
-          <p className="mb-2 text-xs font-black uppercase text-slate-300">Result</p>
-          <ButtonGrid items={["Win", "Lose", "Chop", "Folded", "No Showdown"]} selected={draft.result} onPick={(value) => patch({ result: value as Result })} />
-          <input className="fast-input mt-3" value={draft.amountMemo} onChange={(event) => patch({ amountMemo: event.target.value })} placeholder="+12000 / -8000 / small win" />
-          <textarea className="fast-textarea mt-3 min-h-24" value={draft.handMemo} onChange={(event) => patch({ handMemo: event.target.value })} placeholder="Hand memo" />
+          <SectionHeader title="Board" summary={boardSummary === "-" ? "Not set" : boardSummary} open={openSections.board} onClick={() => toggleSection("board")} />
+          {openSections.board && (
+            <>
+              <div className="mb-2 rounded-md bg-slate-900 p-3 text-sm font-bold text-emerald-300">
+                {boardSummary === "-" ? "Not set" : boardSummary}
+                {boardExtraSummary ? <p className="mt-1 text-xs text-slate-300">{boardExtraSummary}</p> : null}
+              </div>
+              <div className="mb-3 grid grid-cols-3 gap-2">
+                {boardTargets.map((target) => (
+                  <button key={target} onClick={() => setBoardTarget(target)} className={`tap-btn ${boardTarget === target ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>
+                    {target === "flop" ? "Flop" : target === "turn" ? "Turn" : "River"} {formatBoard(draft, target) || ""}
+                  </button>
+                ))}
+              </div>
+              <div className="mb-3 grid grid-cols-7 gap-2">
+                {ranks.map((rank) => <button key={`board-${rank}`} onClick={() => appendBoardRank(rank)} className="tap-chip">{rank}</button>)}
+              </div>
+              <div className="grid grid-cols-3 gap-2">
+                <input className="fast-input" value={draft.board.flop} onChange={(event) => patchBoard({ flop: event.target.value })} placeholder="Flop 986" />
+                <input className="fast-input" value={draft.board.turn} onChange={(event) => patchBoard({ turn: event.target.value })} placeholder="Turn A" />
+                <input className="fast-input" value={draft.board.river} onChange={(event) => patchBoard({ river: event.target.value })} placeholder="River 2" />
+              </div>
+              <div className="mt-3 grid grid-cols-3 gap-2">
+                <button onClick={backspaceBoard} className="tap-small bg-slate-700">Delete last</button>
+                <button onClick={() => clearBoard(boardTarget)} className="tap-small bg-red-950 text-red-200">Clear {boardTarget}</button>
+                <button onClick={() => clearBoard()} className="tap-small bg-red-950 text-red-200">Clear Board</button>
+              </div>
+
+              <button onClick={() => setOpenBoardSuit((value) => !value)} className="mt-3 flex w-full items-center justify-between rounded-md bg-slate-900 p-3 text-left">
+                <span className="text-xs font-black uppercase text-slate-400">Board suit input</span>
+                <span className="text-xs font-black text-slate-300">{openBoardSuit ? "Hide" : "Show"}</span>
+              </button>
+              {openBoardSuit && (
+                <div className="mt-2 rounded-md border border-slate-700 bg-slate-900 p-3">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="text-xs font-black uppercase text-slate-400">
+                      {boardTarget === "flop" ? "Flop suit pattern" : `${boardTarget} suit`}
+                      <span className="ml-2 text-emerald-300">
+                        {boardTarget === "flop" ? draft.board.flopSuits || "-" : boardTarget === "turn" ? draft.board.turnSuit || "-" : draft.board.riverSuit || "-"}
+                      </span>
+                    </p>
+                    {boardTarget === "flop" && draft.board.flopSuits && draft.board.flopSuits.length !== draft.board.flop.length && <span className="text-xs font-bold text-amber-300">suit incomplete</span>}
+                  </div>
+                  <div className="grid grid-cols-4 gap-2">
+                    {["s", "h", "d", "c"].map((suit) => <button key={`board-suit-${suit}`} onClick={() => appendBoardSuit(suit)} className="tap-btn bg-slate-700">{suit}</button>)}
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    <button onClick={backspaceSuit} className="tap-small bg-slate-700">Backspace suit</button>
+                    <button onClick={clearFlopSuits} className="tap-small bg-red-950 text-red-200">Clear Flop Suits</button>
+                  </div>
+                </div>
+              )}
+
+              <button onClick={() => setOpenBoardTags((value) => !value)} className="mt-3 flex w-full items-center justify-between rounded-md bg-slate-900 p-3 text-left">
+                <span className="text-xs font-black uppercase text-slate-400">Board tags</span>
+                <span className="text-xs font-black text-slate-300">{openBoardTags ? "Hide" : "Show"}</span>
+              </button>
+              {openBoardTags && (
+                <div className="mt-2 grid grid-cols-4 gap-2">
+                  {boardTags.map((tag) => (
+                    <button key={tag} onClick={() => toggleBoardTag(tag)} className={`tap-small ${(draft.board.tags || []).includes(tag) ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}>{tag}</button>
+                  ))}
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="rounded-lg bg-slate-800 p-3">
+          <SectionHeader title="Hero Hand" summary={heroHandSummary} open={openSections.heroHand} onClick={() => toggleSection("heroHand")} />
+          {openSections.heroHand && (
+            <>
+              <div className="mb-3 grid grid-cols-3 gap-2">
+                <button onClick={clearHeroHand} className="tap-small bg-red-950 text-red-200">Clear Hero Hand</button>
+                <button onClick={() => { setRankOne(""); setRankTwo(""); }} className="tap-small bg-slate-700">Re-select</button>
+                <button onClick={() => setExactMode((value) => !value)} className="tap-small bg-slate-700">Edit Exact</button>
+              </div>
+              <div className="rounded-md border border-slate-700 bg-slate-900 p-3">
+                <div className="mb-3 flex items-center justify-between">
+                  <p className="text-xs font-black uppercase text-slate-400">Hero Hand summary</p>
+                  <p className="text-lg font-black text-emerald-300">{draft.heroHand || "-"}</p>
+                </div>
+                <p className="mb-2 text-xs font-black uppercase text-slate-400">Rank 1 {rankOne && <span className="text-emerald-300">/ {rankOne}</span>}</p>
+                <div className="grid grid-cols-7 gap-2">
+                  {ranks.map((rank) => <button key={`r1-${rank}`} onClick={() => chooseRankOne(rank)} className={`tap-chip ${rankOne === rank ? "bg-emerald-500 text-slate-950" : ""}`}>{rank}</button>)}
+                </div>
+                <p className="mb-2 mt-3 text-xs font-black uppercase text-slate-400">Rank 2 {rankTwo && <span className="text-emerald-300">/ {rankTwo}</span>}</p>
+                <div className="grid grid-cols-7 gap-2">
+                  {ranks.map((rank) => <button key={`r2-${rank}`} onClick={() => chooseRankTwo(rank)} className={`tap-chip ${rankTwo === rank ? "bg-emerald-500 text-slate-950" : ""}`}>{rank}</button>)}
+                </div>
+                {rankOne && rankTwo && rankOne !== rankTwo && (
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <button onClick={() => finishCombo("s")} className="tap-btn bg-emerald-600 text-slate-950">suited = {rankOne}{rankTwo}s</button>
+                    <button onClick={() => finishCombo("o")} className="tap-btn bg-slate-700">offsuit = {rankOne}{rankTwo}o</button>
+                  </div>
+                )}
+              </div>
+              <button onClick={() => setOpenQuickHands((value) => !value)} className="mt-3 flex w-full items-center justify-between rounded-md bg-slate-900 p-3 text-left">
+                <span className="text-xs font-black uppercase text-slate-400">Quick hand buttons</span>
+                <span className="text-xs font-black text-slate-300">{openQuickHands ? "Hide" : "Show"}</span>
+              </button>
+              {openQuickHands && (
+                <div className="mt-2 grid grid-cols-5 gap-2">
+                  {quickHands.map((item) => <button key={item} onClick={() => { patch({ heroHand: item, exactHeroHand: "" }); setRankOne(""); setRankTwo(""); }} className="tap-chip">{item}</button>)}
+                </div>
+              )}
+              {exactMode && (
+                <div className="mt-3 rounded-md bg-slate-900 p-3">
+                  <p className="mb-2 text-sm font-bold">Exact: {draft.exactHeroHand || "-"}</p>
+                  <div className="grid grid-cols-7 gap-2">
+                    {ranks.map((rank) => <button key={rank} onClick={() => setExactCardRank(rank)} className={`tap-chip ${exactCardRank === rank ? "bg-amber-300 text-slate-950" : ""}`}>{rank}</button>)}
+                  </div>
+                  <div className="mt-2 grid grid-cols-4 gap-2">
+                    {suits.map((suit) => <button key={suit.code} onClick={() => chooseExactSuit(suit.code)} className={`tap-btn bg-white ${suit.className}`}>{suit.label}</button>)}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-emerald-700 bg-emerald-950/40 p-3">
+          <SectionHeader title="Hero Position" summary={heroPositionSummary} open={openSections.heroPosition} onClick={() => toggleSection("heroPosition")} />
+          {openSections.heroPosition && (
+            <ButtonGrid items={positions} selected={draft.heroPosition} onPick={(value) => patch({ heroPosition: value })} />
+          )}
+        </div>
+
+        <div className="rounded-lg bg-slate-800 p-3">
+          <SectionHeader title="Result / Amount / Memo" summary={resultSummary} open={openSections.result} onClick={() => toggleSection("result")} />
+          {openSections.result && (
+            <>
+              <p className="mb-2 text-xs font-black uppercase text-slate-300">Result</p>
+              <ButtonGrid items={["Win", "Lose", "Chop", "Folded", "No Showdown"]} selected={draft.result} onPick={(value) => patch({ result: value as Result })} />
+              <input className="fast-input mt-3" value={draft.amountMemo} onChange={(event) => patch({ amountMemo: event.target.value })} placeholder="+12000 / -8000 / small win" />
+              <textarea className="fast-textarea mt-3 min-h-24" value={draft.handMemo} onChange={(event) => patch({ handMemo: event.target.value })} placeholder="Hand memo" />
+            </>
+          )}
         </div>
 
         <div className="fixed inset-x-0 bottom-0 z-20 mx-auto grid max-w-md grid-cols-2 gap-2 border-t border-slate-700 bg-slate-900 p-3">

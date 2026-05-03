@@ -140,6 +140,37 @@ function buildExportText(session) {
   ].join("\n");
 }
 
+function defaultLiveUiState() {
+  return {
+    action: true,
+    board: true,
+    heroHand: false,
+    heroPosition: false,
+    result: false,
+    boardSuitInput: false,
+    boardTags: false,
+    quickHands: false,
+  };
+}
+
+function summarizeAction(hand) {
+  const ordered = [...streets]
+    .reverse()
+    .map((street) => hand.actions[street][hand.actions[street].length - 1])
+    .filter(Boolean);
+  if (!ordered.length) return "Not set";
+  const latest = ordered[0];
+  return `Last: ${latest.position} ${latest.action}${latest.size ? ` ${latest.size}` : ""}`;
+}
+
+function summarizeHeroPosition(hand) {
+  return hand.heroPosition || "Not set";
+}
+
+function summarizeHeroHand(hand) {
+  return hand.heroHand || "Not set";
+}
+
 test("actions append in pressed order and never overwrite the same position", () => {
   let hand = newHand();
   hand = appendAction(hand, "preflop", "HJ", "Open");
@@ -217,6 +248,33 @@ test("postflop raise can carry optional size labels", () => {
 
   assert.equal(actionsText(hand.actions.flop), "BB Raise 50% / BB All-in");
   assert.equal(actionsText(hand.actions.turn), "HJ Raise 120%");
+});
+
+test("live mode collapse defaults prioritize action and board", () => {
+  const state = defaultLiveUiState();
+  assert.equal(state.action, true);
+  assert.equal(state.board, true);
+  assert.equal(state.heroHand, false);
+  assert.equal(state.heroPosition, false);
+  assert.equal(state.result, false);
+  assert.equal(state.boardSuitInput, false);
+  assert.equal(state.boardTags, false);
+  assert.equal(state.quickHands, false);
+});
+
+test("summaries are available even when sections are conceptually collapsed", () => {
+  let hand = newHand();
+  assert.equal(summarizeAction(hand), "Not set");
+  assert.equal(summarizeHeroHand(hand), "Not set");
+  assert.equal(summarizeHeroPosition(hand), "Not set");
+
+  hand.heroHand = "AKo";
+  hand.heroPosition = "CO";
+  hand = appendAction(hand, "flop", "BTN", "Raise", "50%");
+
+  assert.equal(summarizeAction(hand), "Last: BTN Raise 50%");
+  assert.equal(summarizeHeroHand(hand), "AKo");
+  assert.equal(summarizeHeroPosition(hand), "CO");
 });
 
 test("session export includes session memo, player notes, and linked hands", () => {
