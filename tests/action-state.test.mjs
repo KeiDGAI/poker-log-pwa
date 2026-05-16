@@ -171,6 +171,22 @@ function summarizeHeroHand(hand) {
   return hand.heroHand || "Not set";
 }
 
+function playerNotesDraftState(initialText) {
+  return { savedText: initialText, draftText: initialText };
+}
+
+function editPlayerNotes(state, nextDraft) {
+  return { ...state, draftText: nextDraft };
+}
+
+function savePlayerNotes(state) {
+  return { ...state, savedText: state.draftText };
+}
+
+function cancelPlayerNotes(state) {
+  return { ...state, draftText: state.savedText };
+}
+
 test("actions append in pressed order and never overwrite the same position", () => {
   let hand = newHand();
   hand = appendAction(hand, "preflop", "HJ", "Open");
@@ -355,4 +371,20 @@ test("all streets keep independent append-only logs", () => {
   assert.equal(hand.actions.flop.length, 2);
   assert.equal(hand.actions.turn.length, 2);
   assert.equal(hand.actions.river.length, 2);
+});
+
+test("player notes update only on explicit save", () => {
+  let state = playerNotesDraftState("BTN: コール多め");
+  state = editPlayerNotes(state, "BTN: コール多め\nBB: 3bet少なめ");
+  assert.equal(state.savedText, "BTN: コール多め");
+  state = savePlayerNotes(state);
+  assert.equal(state.savedText, "BTN: コール多め\nBB: 3bet少なめ");
+});
+
+test("player notes cancel discards unsaved changes", () => {
+  let state = playerNotesDraftState("UTG: タイト");
+  state = editPlayerNotes(state, "UTG: タイト\nCO: ルース");
+  state = cancelPlayerNotes(state);
+  assert.equal(state.savedText, "UTG: タイト");
+  assert.equal(state.draftText, "UTG: タイト");
 });

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Copy, Download, FileText, Plus, Save, Trash2, Undo2 } from "lucide-react";
 
-type Screen = "list" | "detail" | "live" | "export";
+type Screen = "list" | "detail" | "live" | "export" | "playerNotes";
 type Street = "preflop" | "flop" | "turn" | "river";
 type Result = "" | "Win" | "Lose" | "Chop" | "Folded" | "No Showdown";
 
@@ -272,6 +272,10 @@ export function PokerLogApp() {
 
   const currentSession = sessions.find((session) => session.id === currentId);
 
+  useEffect(() => {
+    if (screen === "playerNotes" && !currentSession) setScreen("list");
+  }, [screen, currentSession]);
+
   function upsertSession(next: PokerSession) {
     setSessions((current) => {
       const exists = current.some((session) => session.id === next.id);
@@ -353,12 +357,23 @@ export function PokerLogApp() {
           session={currentSession}
           onBack={() => setScreen("list")}
           onChange={upsertSession}
+          onEditPlayerNotes={() => setScreen("playerNotes")}
           onLive={() => openLive(null)}
           onExport={() => setScreen("export")}
           onDelete={() => deleteSession(currentSession.id)}
           onEditHand={(id) => openLive(id)}
           onDeleteHand={deleteHand}
           onDuplicateHand={duplicateHand}
+        />
+      )}
+      {screen === "playerNotes" && currentSession && (
+        <PlayerNotesScreen
+          session={currentSession}
+          onBack={() => setScreen("detail")}
+          onSave={(nextText) => {
+            upsertSession({ ...currentSession, playerNotesText: nextText });
+            setScreen("detail");
+          }}
         />
       )}
       {screen === "live" && currentSession && (
@@ -434,10 +449,11 @@ function SessionList({ sessions, onNew, onOpen, onDelete, onExport }: {
   );
 }
 
-function SessionDetail({ session, onBack, onChange, onLive, onExport, onDelete, onEditHand, onDeleteHand, onDuplicateHand }: {
+function SessionDetail({ session, onBack, onChange, onEditPlayerNotes, onLive, onExport, onDelete, onEditHand, onDeleteHand, onDuplicateHand }: {
   session: PokerSession;
   onBack: () => void;
   onChange: (session: PokerSession) => void;
+  onEditPlayerNotes: () => void;
   onLive: () => void;
   onExport: () => void;
   onDelete: () => void;
@@ -469,7 +485,15 @@ function SessionDetail({ session, onBack, onChange, onLive, onExport, onDelete, 
           <Field label="Cash-out"><input className="fast-input" value={session.cashOut} onChange={(event) => update({ cashOut: event.target.value })} /></Field>
         </div>
         <Field label="Rake memo"><input className="fast-input" value={session.rakeMemo} onChange={(event) => update({ rakeMemo: event.target.value })} placeholder="10% capあり" /></Field>
-        <Field label="Player notes for this session"><textarea className="fast-textarea min-h-28" value={session.playerNotesText} onChange={(event) => update({ playerNotesText: event.target.value })} placeholder={"BTN: コール多め\nBB: 3bet少なめ"} /></Field>
+        <div className="rounded-lg border border-slate-700 bg-slate-800 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-black uppercase text-slate-400">Player Notes</p>
+              <p className="text-sm font-bold text-emerald-300">文字数: {session.playerNotesText.length}</p>
+            </div>
+            <button onClick={onEditPlayerNotes} className="tap-small bg-slate-700">Edit</button>
+          </div>
+        </div>
         <Field label="Session memo"><textarea className="fast-textarea min-h-24" value={session.sessionMemo} onChange={(event) => update({ sessionMemo: event.target.value })} /></Field>
 
         <div className="grid grid-cols-2 gap-3">
@@ -508,6 +532,36 @@ function SessionDetail({ session, onBack, onChange, onLive, onExport, onDelete, 
             ))}
           </div>
         </section>
+      </section>
+    </div>
+  );
+}
+
+function PlayerNotesScreen({ session, onBack, onSave }: {
+  session: PokerSession;
+  onBack: () => void;
+  onSave: (nextText: string) => void;
+}) {
+  const [draft, setDraft] = useState(session.playerNotesText);
+
+  useEffect(() => {
+    setDraft(session.playerNotesText);
+  }, [session.id, session.playerNotesText]);
+
+  return (
+    <div className="pb-6">
+      <Header title="Player Notes" subtitle={`${formatDate(session.dateTime)} / ${session.place || "No place"}`} action={<button onClick={onBack} className="tap-small bg-slate-800">Cancel</button>} />
+      <section className="space-y-3 p-4">
+        <textarea
+          className="fast-textarea min-h-[62dvh]"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder={"BTN: コール多め\nBB: 3bet少なめ"}
+        />
+        <div className="grid grid-cols-2 gap-2">
+          <button onClick={onBack} className="tap-btn bg-slate-700">Back</button>
+          <button onClick={() => onSave(draft)} className="tap-primary"><Save size={18} /> Save Notes</button>
+        </div>
       </section>
     </div>
   );
