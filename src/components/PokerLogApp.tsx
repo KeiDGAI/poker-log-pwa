@@ -542,21 +542,122 @@ function PlayerNotesScreen({ session, onBack, onSave }: {
   onBack: () => void;
   onSave: (nextText: string) => void;
 }) {
+  const seatNumbers = Array.from({ length: 9 }, (_, index) => `${index + 1}`);
+
+  type SeatLine = { label: string; content: string };
+  type ParsedNotes = { seatLines: SeatLine[]; freeLines: string[] };
+
+  function parsePlayerNotes(text: string): ParsedNotes {
+    const lines = text.split("\n");
+    const seatLines: SeatLine[] = [];
+    const freeLines: string[] = [];
+    const seatPattern = /^([1-9](?:-\d+)?)\s*:\s*(.*)$/;
+    for (const line of lines) {
+      const match = line.match(seatPattern);
+      if (match) {
+        seatLines.push({ label: match[1], content: match[2] || "" });
+      } else if (line.trim()) {
+        freeLines.push(line);
+      }
+    }
+    return { seatLines, freeLines };
+  }
+
+  function buildPlayerNotesText(parsed: ParsedNotes): string {
+    const seatText = parsed.seatLines.map((item) => `${item.label}: ${item.content}`.trimEnd());
+    return [...seatText, ...parsed.freeLines].join("\n").trim();
+  }
+
+  function nextSeatLabel(seatLines: SeatLine[], baseSeat: string): string {
+    const pattern = new RegExp(`^${baseSeat}(?:-(\\d+))?$`);
+    let max = 1;
+    for (const line of seatLines) {
+      const match = line.label.match(pattern);
+      if (!match) continue;
+      const suffix = match[1] ? Number(match[1]) : 1;
+      if (Number.isFinite(suffix)) max = Math.max(max, suffix);
+    }
+    return `${baseSeat}-${max + 1}`;
+  }
+
+  function latestSeatContent(seatLines: SeatLine[], baseSeat: string) {
+    const related = seatLines.filter((line) => line.label === baseSeat || line.label.startsWith(`${baseSeat}-`));
+    if (!related.length) return "";
+    return related[related.length - 1].content;
+  }
+
   const [draft, setDraft] = useState(session.playerNotesText);
+  const [pendingFocusLabel, setPendingFocusLabel] = useState("");
 
   useEffect(() => {
     setDraft(session.playerNotesText);
   }, [session.id, session.playerNotesText]);
 
+  const parsed = useMemo(() => parsePlayerNotes(draft), [draft]);
+
+  function setSeatContent(baseSeat: string, nextContent: string) {
+    const nextSeatLines = [...parsed.seatLines];
+    const targetIndex = [...nextSeatLines].reverse().findIndex(
+      (line) => line.label === baseSeat || line.label.startsWith(`${baseSeat}-`)
+    );
+    if (targetIndex === -1) {
+      nextSeatLines.push({ label: baseSeat, content: nextContent });
+    } else {
+      const realIndex = nextSeatLines.length - 1 - targetIndex;
+      nextSeatLines[realIndex] = { ...nextSeatLines[realIndex], content: nextContent };
+    }
+    setDraft(buildPlayerNotesText({ seatLines: nextSeatLines, freeLines: parsed.freeLines }));
+  }
+
+  function appendSeatShift(baseSeat: string) {
+    const label = nextSeatLabel(parsed.seatLines, baseSeat);
+    const nextSeatLines = [...parsed.seatLines, { label, content: "" }];
+    setDraft(buildPlayerNotesText({ seatLines: nextSeatLines, freeLines: parsed.freeLines }));
+    setPendingFocusLabel(label);
+  }
+
+  useEffect(() => {
+    if (!pendingFocusLabel) return;
+    const target = document.querySelector<HTMLTextAreaElement>(`textarea[data-seat-label="${pendingFocusLabel}"]`);
+    if (!target) return;
+    target.focus();
+    setPendingFocusLabel("");
+  }, [draft, pendingFocusLabel]);
+
   return (
     <div className="pb-6">
       <Header title="Player Notes" subtitle={`${formatDate(session.dateTime)} / ${session.place || "No place"}`} action={<button onClick={onBack} className="tap-small bg-slate-800">Cancel</button>} />
       <section className="space-y-3 p-4">
+        <div className="rounded-lg border border-slate-700 bg-slate-800 p-3">
+          <p className="mb-2 text-xs font-black uppercase text-slate-400">Seat Presets (1-9)</p>
+          <div className="space-y-3">
+            {seatNumbers.map((seat) => (
+              <div key={seat} className="rounded-md border border-slate-700 bg-slate-900 p-2">
+                <div className="mb-2 flex items-center justify-between gap-2">
+                  <p className="text-sm font-black text-emerald-300">Seat {seat}</p>
+                  <button onClick={() => appendSeatShift(seat)} className="tap-small bg-slate-700">{nextSeatLabel(parsed.seatLines, seat)} を追加</button>
+                </div>
+                <textarea
+                  data-seat-label={
+                    (() => {
+                      const related = parsed.seatLines.filter((line) => line.label === seat || line.label.startsWith(`${seat}-`));
+                      return related.length ? related[related.length - 1].label : seat;
+                    })()
+                  }
+                  className="fast-textarea min-h-20"
+                  value={latestSeatContent(parsed.seatLines, seat)}
+                  onChange={(event) => setSeatContent(seat, event.target.value)}
+                  placeholder={`${seat}: ノート`}
+                />
+              </div>
+            ))}
+          </div>
+        </div>
         <textarea
           className="fast-textarea min-h-[62dvh]"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder={"BTN: コール多め\nBB: 3bet少なめ"}
+          placeholder={"1: TAG寄り\n1-2: ルース\n2: 3bet少なめ"}
         />
         <div className="grid grid-cols-2 gap-2">
           <button onClick={onBack} className="tap-btn bg-slate-700">Back</button>

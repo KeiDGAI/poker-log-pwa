@@ -187,6 +187,36 @@ function cancelPlayerNotes(state) {
   return { ...state, draftText: state.savedText };
 }
 
+function parsePlayerNotes(text) {
+  const lines = text.split("\n");
+  const seatLines = [];
+  const freeLines = [];
+  const seatPattern = /^([1-9](?:-\d+)?)\s*:\s*(.*)$/;
+  for (const line of lines) {
+    const match = line.match(seatPattern);
+    if (match) seatLines.push({ label: match[1], content: match[2] || "" });
+    else if (line.trim()) freeLines.push(line);
+  }
+  return { seatLines, freeLines };
+}
+
+function buildPlayerNotesText(parsed) {
+  const seatText = parsed.seatLines.map((item) => `${item.label}: ${item.content}`.trimEnd());
+  return [...seatText, ...parsed.freeLines].join("\n").trim();
+}
+
+function nextSeatLabel(seatLines, baseSeat) {
+  const pattern = new RegExp(`^${baseSeat}(?:-(\\d+))?$`);
+  let max = 1;
+  for (const line of seatLines) {
+    const match = line.label.match(pattern);
+    if (!match) continue;
+    const suffix = match[1] ? Number(match[1]) : 1;
+    if (Number.isFinite(suffix)) max = Math.max(max, suffix);
+  }
+  return `${baseSeat}-${max + 1}`;
+}
+
 test("actions append in pressed order and never overwrite the same position", () => {
   let hand = newHand();
   hand = appendAction(hand, "preflop", "HJ", "Open");
@@ -387,4 +417,31 @@ test("player notes cancel discards unsaved changes", () => {
   state = cancelPlayerNotes(state);
   assert.equal(state.savedText, "UTG: タイト");
   assert.equal(state.draftText, "UTG: タイト");
+});
+
+test("player notes parser reads seat labels and keeps free lines", () => {
+  const parsed = parsePlayerNotes("1: TAG\n1-2: ルース\nメモ自由文\n9: ショート");
+  assert.deepEqual(parsed.seatLines, [
+    { label: "1", content: "TAG" },
+    { label: "1-2", content: "ルース" },
+    { label: "9", content: "ショート" },
+  ]);
+  assert.deepEqual(parsed.freeLines, ["メモ自由文"]);
+});
+
+test("seat shift labels increment as 1 -> 1-2 -> 1-3", () => {
+  const parsed = parsePlayerNotes("1: A\n1-2: B\n2: C");
+  assert.equal(nextSeatLabel(parsed.seatLines, "1"), "1-3");
+  assert.equal(nextSeatLabel(parsed.seatLines, "2"), "2-2");
+});
+
+test("player notes serialize keeps seat lines and free text", () => {
+  const text = buildPlayerNotesText({
+    seatLines: [
+      { label: "1", content: "TAG寄り" },
+      { label: "1-2", content: "ルース" },
+    ],
+    freeLines: ["全体メモ"],
+  });
+  assert.equal(text, "1: TAG寄り\n1-2: ルース\n全体メモ");
 });
