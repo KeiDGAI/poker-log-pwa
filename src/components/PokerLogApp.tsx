@@ -633,22 +633,25 @@ function PlayerNotesScreen({ session, onBack, onSave }: {
           <div className="space-y-3">
             {seatNumbers.map((seat) => (
               <div key={seat} className="rounded-md border border-slate-700 bg-slate-900 p-2">
+                {(() => {
+                  const related = parsed.seatLines.filter((line) => line.label === seat || line.label.startsWith(`${seat}-`));
+                  const activeLabel = related.length ? related[related.length - 1].label : seat;
+                  return (
+                    <>
                 <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-sm font-black text-emerald-300">Seat {seat}</p>
+                  <p className="text-sm font-black text-emerald-300">Seat {activeLabel}</p>
                   <button onClick={() => appendSeatShift(seat)} className="tap-small bg-slate-700">{nextSeatLabel(parsed.seatLines, seat)} を追加</button>
                 </div>
                 <textarea
-                  data-seat-label={
-                    (() => {
-                      const related = parsed.seatLines.filter((line) => line.label === seat || line.label.startsWith(`${seat}-`));
-                      return related.length ? related[related.length - 1].label : seat;
-                    })()
-                  }
+                  data-seat-label={activeLabel}
                   className="fast-textarea min-h-20"
                   value={latestSeatContent(parsed.seatLines, seat)}
                   onChange={(event) => setSeatContent(seat, event.target.value)}
-                  placeholder={`${seat}: ノート`}
+                  placeholder={`${activeLabel}: ノート`}
                 />
+                    </>
+                  );
+                })()}
               </div>
             ))}
           </div>
