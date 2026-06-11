@@ -171,27 +171,23 @@ function summarizeHeroHand(hand) {
   return hand.heroHand || "Not set";
 }
 
-function playerNotesDraftState(initialText) {
-  return { savedText: initialText, draftText: initialText };
+function playerNotesAutoSaveState(initialText) {
+  return { savedText: initialText };
 }
 
-function editPlayerNotes(state, nextDraft) {
-  return { ...state, draftText: nextDraft };
+function editPlayerNotes(state, nextText) {
+  return { ...state, savedText: nextText };
 }
 
-function savePlayerNotes(state) {
-  return { ...state, savedText: state.draftText };
-}
-
-function cancelPlayerNotes(state) {
-  return { ...state, draftText: state.savedText };
+function seatBaseOf(label) {
+  return label.split("-")[0];
 }
 
 function parsePlayerNotes(text) {
   const lines = text.split("\n");
   const seatLines = [];
   const freeLines = [];
-  const seatPattern = /^([1-9](?:-\d+)?)\s*:\s*(.*)$/;
+  const seatPattern = /^((?:10|[1-9])(?:-\d+)?)\s*:\s*(.*)$/;
   for (const line of lines) {
     const match = line.match(seatPattern);
     if (match) seatLines.push({ label: match[1], content: match[2] || "" });
@@ -206,15 +202,33 @@ function buildPlayerNotesText(parsed) {
 }
 
 function nextSeatLabel(seatLines, baseSeat) {
-  const pattern = new RegExp(`^${baseSeat}(?:-(\\d+))?$`);
   let max = 1;
   for (const line of seatLines) {
-    const match = line.label.match(pattern);
-    if (!match) continue;
-    const suffix = match[1] ? Number(match[1]) : 1;
+    if (seatBaseOf(line.label) !== baseSeat) continue;
+    const suffix = line.label.includes("-") ? Number(line.label.split("-")[1]) : 1;
     if (Number.isFinite(suffix)) max = Math.max(max, suffix);
   }
   return `${baseSeat}-${max + 1}`;
+}
+
+function seatRelatedLines(seatLines, baseSeat) {
+  return seatLines.filter((line) => seatBaseOf(line.label) === baseSeat);
+}
+
+function latestSeatContent(seatLines, baseSeat) {
+  const related = seatRelatedLines(seatLines, baseSeat);
+  if (!related.length) return "";
+  return related[related.length - 1].content;
+}
+
+function transferSeatNotes(parsed, fromSeat, toSeat) {
+  if (fromSeat === toSeat) return parsed;
+  const content = latestSeatContent(parsed.seatLines, fromSeat);
+  const seatLines = [...parsed.seatLines];
+  const toLabel = seatRelatedLines(seatLines, toSeat).length ? nextSeatLabel(seatLines, toSeat) : toSeat;
+  seatLines.push({ label: toLabel, content });
+  seatLines.push({ label: nextSeatLabel(seatLines, fromSeat), content: "" });
+  return { seatLines, freeLines: parsed.freeLines };
 }
 
 test("actions append in pressed order and never overwrite the same position", () => {
@@ -403,20 +417,47 @@ test("all streets keep independent append-only logs", () => {
   assert.equal(hand.actions.river.length, 2);
 });
 
-test("player notes update only on explicit save", () => {
-  let state = playerNotesDraftState("BTN: コール多め");
-  state = editPlayerNotes(state, "BTN: コール多め\nBB: 3bet少なめ");
-  assert.equal(state.savedText, "BTN: コール多め");
-  state = savePlayerNotes(state);
-  assert.equal(state.savedText, "BTN: コール多め\nBB: 3bet少なめ");
+test("player notes auto-save reflects every edit immediately", () => {
+  let state = playerNotesAutoSaveState("1: コール多め");
+  state = editPlayerNotes(state, "1: コール多め\n2: 3bet少なめ");
+  assert.equal(state.savedText, "1: コール多め\n2: 3bet少なめ");
+  state = editPlayerNotes(state, "1: コール多め\n2: 3bet少なめ\n3: タイト");
+  assert.equal(state.savedText, "1: コール多め\n2: 3bet少なめ\n3: タイト");
 });
 
-test("player notes cancel discards unsaved changes", () => {
-  let state = playerNotesDraftState("UTG: タイト");
-  state = editPlayerNotes(state, "UTG: タイト\nCO: ルース");
-  state = cancelPlayerNotes(state);
-  assert.equal(state.savedText, "UTG: タイト");
-  assert.equal(state.draftText, "UTG: タイト");
+test("player notes parser supports seat 10 and its shifts", () => {
+  const parsed = parsePlayerNotes("10: アグレッシブ\n10-2: パッシブ\n1: TAG\n1-2: ルース");
+  assert.deepEqual(parsed.seatLines, [
+    { label: "10", content: "アグレッシブ" },
+    { label: "10-2", content: "パッシブ" },
+    { label: "1", content: "TAG" },
+    { label: "1-2", content: "ルース" },
+  ]);
+  assert.equal(latestSeatContent(parsed.seatLines, "10"), "パッシブ");
+  assert.equal(latestSeatContent(parsed.seatLines, "1"), "ルース");
+  assert.equal(nextSeatLabel(parsed.seatLines, "10"), "10-3");
+});
+
+test("seat 1 base matching does not swallow seat 10 labels", () => {
+  const parsed = parsePlayerNotes("1: A\n10: B");
+  assert.equal(latestSeatContent(parsed.seatLines, "1"), "A");
+  assert.equal(latestSeatContent(parsed.seatLines, "10"), "B");
+  assert.equal(nextSeatLabel(parsed.seatLines, "1"), "1-2");
+});
+
+test("seat transfer moves latest note to destination and frees source seat", () => {
+  const parsed = parsePlayerNotes("3: タイトな人\n7: ルースな人");
+  const next = transferSeatNotes(parsed, "3", "7");
+  assert.equal(latestSeatContent(next.seatLines, "7"), "タイトな人");
+  assert.equal(latestSeatContent(next.seatLines, "3"), "");
+  assert.deepEqual(next.seatLines.map((line) => line.label), ["3", "7", "7-2", "3-2"]);
+});
+
+test("seat transfer to an empty seat uses the base label", () => {
+  const parsed = parsePlayerNotes("3: タイトな人");
+  const next = transferSeatNotes(parsed, "3", "5");
+  assert.deepEqual(next.seatLines.map((line) => line.label), ["3", "5", "3-2"]);
+  assert.equal(latestSeatContent(next.seatLines, "5"), "タイトな人");
 });
 
 test("player notes parser reads seat labels and keeps free lines", () => {

@@ -53,6 +53,7 @@ type PokerSession = {
   rakeMemo: string;
   playerNotesText: string;
   sessionMemo: string;
+  seatCount?: number;
   hands: HandNote[];
 };
 
@@ -125,8 +126,67 @@ function newSession(): PokerSession {
     rakeMemo: "",
     playerNotesText: "",
     sessionMemo: "",
+    seatCount: 9,
     hands: [],
   };
+}
+
+type SeatLine = { label: string; content: string };
+type ParsedNotes = { seatLines: SeatLine[]; freeLines: string[] };
+
+function seatBaseOf(label: string) {
+  return label.split("-")[0];
+}
+
+export function parsePlayerNotes(text: string): ParsedNotes {
+  const lines = text.split("\n");
+  const seatLines: SeatLine[] = [];
+  const freeLines: string[] = [];
+  const seatPattern = /^((?:10|[1-9])(?:-\d+)?)\s*:\s*(.*)$/;
+  for (const line of lines) {
+    const match = line.match(seatPattern);
+    if (match) {
+      seatLines.push({ label: match[1], content: match[2] || "" });
+    } else if (line.trim()) {
+      freeLines.push(line);
+    }
+  }
+  return { seatLines, freeLines };
+}
+
+export function buildPlayerNotesText(parsed: ParsedNotes): string {
+  const seatText = parsed.seatLines.map((item) => `${item.label}: ${item.content}`.trimEnd());
+  return [...seatText, ...parsed.freeLines].join("\n").trim();
+}
+
+export function nextSeatLabel(seatLines: SeatLine[], baseSeat: string): string {
+  let max = 1;
+  for (const line of seatLines) {
+    if (seatBaseOf(line.label) !== baseSeat) continue;
+    const suffix = line.label.includes("-") ? Number(line.label.split("-")[1]) : 1;
+    if (Number.isFinite(suffix)) max = Math.max(max, suffix);
+  }
+  return `${baseSeat}-${max + 1}`;
+}
+
+function seatRelatedLines(seatLines: SeatLine[], baseSeat: string) {
+  return seatLines.filter((line) => seatBaseOf(line.label) === baseSeat);
+}
+
+export function latestSeatContent(seatLines: SeatLine[], baseSeat: string) {
+  const related = seatRelatedLines(seatLines, baseSeat);
+  if (!related.length) return "";
+  return related[related.length - 1].content;
+}
+
+export function transferSeatNotes(parsed: ParsedNotes, fromSeat: string, toSeat: string): ParsedNotes {
+  if (fromSeat === toSeat) return parsed;
+  const content = latestSeatContent(parsed.seatLines, fromSeat);
+  const seatLines = [...parsed.seatLines];
+  const toLabel = seatRelatedLines(seatLines, toSeat).length ? nextSeatLabel(seatLines, toSeat) : toSeat;
+  seatLines.push({ label: toLabel, content });
+  seatLines.push({ label: nextSeatLabel(seatLines, fromSeat), content: "" });
+  return { seatLines, freeLines: parsed.freeLines };
 }
 
 function formatDate(value: string) {
@@ -348,6 +408,7 @@ export function PokerLogApp() {
           sessions={sessions}
           onNew={startSession}
           onOpen={(id) => { setCurrentId(id); setScreen("detail"); }}
+          onNotes={(id) => { setCurrentId(id); setScreen("playerNotes"); }}
           onDelete={deleteSession}
           onExport={(id) => { setCurrentId(id); setScreen("export"); }}
         />
@@ -370,10 +431,7 @@ export function PokerLogApp() {
         <PlayerNotesScreen
           session={currentSession}
           onBack={() => setScreen("detail")}
-          onSave={(nextText) => {
-            upsertSession({ ...currentSession, playerNotesText: nextText });
-            setScreen("detail");
-          }}
+          onChange={(nextText) => upsertSession({ ...currentSession, playerNotesText: nextText })}
         />
       )}
       {screen === "live" && currentSession && (
@@ -409,10 +467,11 @@ function Header({ title, subtitle, action }: { title: string; subtitle?: string;
   );
 }
 
-function SessionList({ sessions, onNew, onOpen, onDelete, onExport }: {
+function SessionList({ sessions, onNew, onOpen, onNotes, onDelete, onExport }: {
   sessions: PokerSession[];
   onNew: () => void;
   onOpen: (id: string) => void;
+  onNotes: (id: string) => void;
   onDelete: (id: string) => void;
   onExport: (id: string) => void;
 }) {
@@ -437,7 +496,8 @@ function SessionList({ sessions, onNew, onOpen, onDelete, onExport }: {
               </div>
               {(session.cashOut || session.buyIn) && <p className="mt-2 text-sm text-emerald-300">Buy-in {session.buyIn || "-"} / Cash-out {session.cashOut || "-"}</p>}
             </button>
-            <div className="mt-3 grid grid-cols-3 gap-2">
+            <div className="mt-3 grid grid-cols-4 gap-2">
+              <button onClick={() => onNotes(session.id)} className="tap-btn bg-emerald-600 text-slate-950">Notes</button>
               <button onClick={() => onOpen(session.id)} className="tap-btn bg-slate-700">Open</button>
               <button onClick={() => onExport(session.id)} className="tap-btn bg-slate-700">Export</button>
               <button onClick={() => onDelete(session.id)} className="tap-btn bg-red-950 text-red-200"><Trash2 size={16} /> Delete</button>
@@ -485,21 +545,30 @@ function SessionDetail({ session, onBack, onChange, onEditPlayerNotes, onLive, o
           <Field label="Cash-out"><input className="fast-input" value={session.cashOut} onChange={(event) => update({ cashOut: event.target.value })} /></Field>
         </div>
         <Field label="Rake memo"><input className="fast-input" value={session.rakeMemo} onChange={(event) => update({ rakeMemo: event.target.value })} placeholder="10% capあり" /></Field>
-        <div className="rounded-lg border border-slate-700 bg-slate-800 p-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <p className="text-xs font-black uppercase text-slate-400">Player Notes</p>
-              <p className="text-sm font-bold text-emerald-300">文字数: {session.playerNotesText.length}</p>
-            </div>
-            <button onClick={onEditPlayerNotes} className="tap-small bg-slate-700">Edit</button>
+        <Field label="Seats">
+          <div className="grid grid-cols-2 gap-2">
+            {[9, 10].map((count) => (
+              <button
+                key={count}
+                onClick={() => update({ seatCount: count })}
+                className={`tap-btn ${(session.seatCount ?? 9) === count ? "bg-emerald-500 text-slate-950" : "bg-slate-700"}`}
+              >
+                {count}人卓
+              </button>
+            ))}
           </div>
-        </div>
+        </Field>
+
+        <button onClick={onEditPlayerNotes} className="tap-primary w-full">
+          <FileText size={18} /> Player Notes{session.playerNotesText.length > 0 ? ` (${session.playerNotesText.length}文字)` : ""}
+        </button>
+
         <Field label="Session memo"><textarea className="fast-textarea min-h-24" value={session.sessionMemo} onChange={(event) => update({ sessionMemo: event.target.value })} /></Field>
 
-        <div className="grid grid-cols-2 gap-3">
-          <button onClick={onLive} className="tap-primary col-span-2"><Plus size={18} /> Start Live Mode</button>
-          <button onClick={onExport} className="tap-btn bg-slate-700"><FileText size={18} /> Export</button>
-          <button onClick={onDelete} className="tap-btn bg-red-950 text-red-200"><Trash2 size={18} /> Delete</button>
+        <div className="grid grid-cols-3 gap-2">
+          <button onClick={onLive} className="tap-btn bg-slate-700"><Plus size={16} /> ハンド記録</button>
+          <button onClick={onExport} className="tap-btn bg-slate-700"><FileText size={16} /> Export</button>
+          <button onClick={onDelete} className="tap-btn bg-red-950 text-red-200"><Trash2 size={16} /> Delete</button>
         </div>
 
         <section>
@@ -537,135 +606,182 @@ function SessionDetail({ session, onBack, onChange, onEditPlayerNotes, onLive, o
   );
 }
 
-function PlayerNotesScreen({ session, onBack, onSave }: {
+function PlayerNotesScreen({ session, onBack, onChange }: {
   session: PokerSession;
   onBack: () => void;
-  onSave: (nextText: string) => void;
+  onChange: (nextText: string) => void;
 }) {
-  const seatNumbers = Array.from({ length: 9 }, (_, index) => `${index + 1}`);
+  const seatCount = session.seatCount ?? 9;
+  const seatNumbers = Array.from({ length: seatCount }, (_, index) => `${index + 1}`);
 
-  type SeatLine = { label: string; content: string };
-  type ParsedNotes = { seatLines: SeatLine[]; freeLines: string[] };
+  const [selectedSeat, setSelectedSeat] = useState("");
+  const [moveMode, setMoveMode] = useState(false);
+  const [showFreeMemo, setShowFreeMemo] = useState(false);
+  const [showRawText, setShowRawText] = useState(false);
 
-  function parsePlayerNotes(text: string): ParsedNotes {
-    const lines = text.split("\n");
-    const seatLines: SeatLine[] = [];
-    const freeLines: string[] = [];
-    const seatPattern = /^([1-9](?:-\d+)?)\s*:\s*(.*)$/;
-    for (const line of lines) {
-      const match = line.match(seatPattern);
-      if (match) {
-        seatLines.push({ label: match[1], content: match[2] || "" });
-      } else if (line.trim()) {
-        freeLines.push(line);
-      }
-    }
-    return { seatLines, freeLines };
+  const parsed = useMemo(() => parsePlayerNotes(session.playerNotesText), [session.playerNotesText]);
+
+  function focusSeatInput(seat: string) {
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLTextAreaElement>(`textarea[data-seat="${seat}"]`)?.focus();
+    });
   }
 
-  function buildPlayerNotesText(parsed: ParsedNotes): string {
-    const seatText = parsed.seatLines.map((item) => `${item.label}: ${item.content}`.trimEnd());
-    return [...seatText, ...parsed.freeLines].join("\n").trim();
+  function commit(next: ParsedNotes) {
+    onChange(buildPlayerNotesText(next));
   }
-
-  function nextSeatLabel(seatLines: SeatLine[], baseSeat: string): string {
-    const pattern = new RegExp(`^${baseSeat}(?:-(\\d+))?$`);
-    let max = 1;
-    for (const line of seatLines) {
-      const match = line.label.match(pattern);
-      if (!match) continue;
-      const suffix = match[1] ? Number(match[1]) : 1;
-      if (Number.isFinite(suffix)) max = Math.max(max, suffix);
-    }
-    return `${baseSeat}-${max + 1}`;
-  }
-
-  function latestSeatContent(seatLines: SeatLine[], baseSeat: string) {
-    const related = seatLines.filter((line) => line.label === baseSeat || line.label.startsWith(`${baseSeat}-`));
-    if (!related.length) return "";
-    return related[related.length - 1].content;
-  }
-
-  const [draft, setDraft] = useState(session.playerNotesText);
-  const [pendingFocusLabel, setPendingFocusLabel] = useState("");
-
-  useEffect(() => {
-    setDraft(session.playerNotesText);
-  }, [session.id, session.playerNotesText]);
-
-  const parsed = useMemo(() => parsePlayerNotes(draft), [draft]);
 
   function setSeatContent(baseSeat: string, nextContent: string) {
     const nextSeatLines = [...parsed.seatLines];
-    const targetIndex = [...nextSeatLines].reverse().findIndex(
-      (line) => line.label === baseSeat || line.label.startsWith(`${baseSeat}-`)
-    );
+    const targetIndex = [...nextSeatLines].reverse().findIndex((line) => seatBaseOf(line.label) === baseSeat);
     if (targetIndex === -1) {
       nextSeatLines.push({ label: baseSeat, content: nextContent });
     } else {
       const realIndex = nextSeatLines.length - 1 - targetIndex;
       nextSeatLines[realIndex] = { ...nextSeatLines[realIndex], content: nextContent };
     }
-    setDraft(buildPlayerNotesText({ seatLines: nextSeatLines, freeLines: parsed.freeLines }));
+    commit({ seatLines: nextSeatLines, freeLines: parsed.freeLines });
   }
 
-  function appendSeatShift(baseSeat: string) {
+  function newPlayerAt(baseSeat: string) {
     const label = nextSeatLabel(parsed.seatLines, baseSeat);
-    const nextSeatLines = [...parsed.seatLines, { label, content: "" }];
-    setDraft(buildPlayerNotesText({ seatLines: nextSeatLines, freeLines: parsed.freeLines }));
-    setPendingFocusLabel(label);
+    commit({ seatLines: [...parsed.seatLines, { label, content: "" }], freeLines: parsed.freeLines });
+    focusSeatInput(baseSeat);
   }
 
-  useEffect(() => {
-    if (!pendingFocusLabel) return;
-    const target = document.querySelector<HTMLTextAreaElement>(`textarea[data-seat-label="${pendingFocusLabel}"]`);
-    if (!target) return;
-    target.focus();
-    setPendingFocusLabel("");
-  }, [draft, pendingFocusLabel]);
+  function handleSeatTap(seat: string) {
+    if (moveMode && selectedSeat) {
+      if (seat !== selectedSeat) {
+        commit(transferSeatNotes(parsed, selectedSeat, seat));
+        setSelectedSeat(seat);
+      }
+      setMoveMode(false);
+      return;
+    }
+    setSelectedSeat((current) => (current === seat ? "" : seat));
+    focusSeatInput(seat);
+  }
+
+  const selectedRelated = selectedSeat ? parsed.seatLines.filter((line) => seatBaseOf(line.label) === selectedSeat) : [];
+  const selectedActiveLabel = selectedRelated.length ? selectedRelated[selectedRelated.length - 1].label : selectedSeat;
+  const selectedHistory = selectedRelated.slice(0, -1);
+  const freeText = parsed.freeLines.join("\n");
 
   return (
     <div className="pb-6">
-      <Header title="Player Notes" subtitle={`${formatDate(session.dateTime)} / ${session.place || "No place"}`} action={<button onClick={onBack} className="tap-small bg-slate-800">Cancel</button>} />
+      <Header
+        title="Player Notes"
+        subtitle={`${formatDate(session.dateTime)} / ${session.place || "No place"} / 自動保存`}
+        action={<button onClick={onBack} className="tap-small bg-slate-800">Back</button>}
+      />
       <section className="space-y-3 p-4">
-        <div className="rounded-lg border border-slate-700 bg-slate-800 p-3">
-          <p className="mb-2 text-xs font-black uppercase text-slate-400">Seat Presets (1-9)</p>
-          <div className="space-y-3">
-            {seatNumbers.map((seat) => (
-              <div key={seat} className="rounded-md border border-slate-700 bg-slate-900 p-2">
-                {(() => {
-                  const related = parsed.seatLines.filter((line) => line.label === seat || line.label.startsWith(`${seat}-`));
-                  const activeLabel = related.length ? related[related.length - 1].label : seat;
-                  return (
-                    <>
-                <div className="mb-2 flex items-center justify-between gap-2">
-                  <p className="text-sm font-black text-emerald-300">Seat {activeLabel}</p>
-                  <button onClick={() => appendSeatShift(seat)} className="tap-small bg-slate-700">{nextSeatLabel(parsed.seatLines, seat)} を追加</button>
-                </div>
-                <textarea
-                  data-seat-label={activeLabel}
-                  className="fast-textarea min-h-20"
-                  value={latestSeatContent(parsed.seatLines, seat)}
-                  onChange={(event) => setSeatContent(seat, event.target.value)}
-                  placeholder={`${activeLabel}: ノート`}
-                />
-                    </>
-                  );
-                })()}
-              </div>
-            ))}
+        <div className="sticky top-[57px] z-10 rounded-lg border border-slate-700 bg-slate-900/95 p-2 backdrop-blur">
+          {moveMode && (
+            <p className="mb-2 rounded bg-amber-500/20 px-2 py-1 text-center text-xs font-black text-amber-300">
+              Seat {selectedSeat} の移動先をタップ（もう一度「席替え」でキャンセル）
+            </p>
+          )}
+          <div className={`grid gap-2 ${seatCount === 10 ? "grid-cols-5" : "grid-cols-3"}`}>
+            {seatNumbers.map((seat) => {
+              const related = parsed.seatLines.filter((line) => seatBaseOf(line.label) === seat);
+              const activeLabel = related.length ? related[related.length - 1].label : seat;
+              const content = latestSeatContent(parsed.seatLines, seat);
+              const isSelected = selectedSeat === seat;
+              return (
+                <button
+                  key={seat}
+                  onClick={() => handleSeatTap(seat)}
+                  className={`rounded-md border p-2 text-left ${
+                    isSelected
+                      ? "border-emerald-400 bg-emerald-500/20"
+                      : moveMode
+                        ? "border-amber-500/60 bg-slate-800"
+                        : "border-slate-700 bg-slate-800"
+                  }`}
+                >
+                  <span className="block text-sm font-black text-emerald-300">{activeLabel}</span>
+                  <span className="block truncate text-[10px] leading-tight text-slate-400">{content || "—"}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
-        <textarea
-          className="fast-textarea min-h-[62dvh]"
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          placeholder={"1: TAG寄り\n1-2: ルース\n2: 3bet少なめ"}
-        />
-        <div className="grid grid-cols-2 gap-2">
-          <button onClick={onBack} className="tap-btn bg-slate-700">Back</button>
-          <button onClick={() => onSave(draft)} className="tap-primary"><Save size={18} /> Save Notes</button>
+
+        {selectedSeat && (
+          <div className="rounded-lg border border-emerald-700 bg-slate-800 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-sm font-black text-emerald-300">Seat {selectedActiveLabel}</p>
+              <div className="flex gap-2">
+                <button onClick={() => newPlayerAt(selectedSeat)} className="tap-small bg-slate-700">新プレイヤー</button>
+                <button
+                  onClick={() => setMoveMode((current) => !current)}
+                  className={`tap-small ${moveMode ? "bg-amber-500 text-slate-950" : "bg-slate-700"}`}
+                >
+                  席替え →
+                </button>
+              </div>
+            </div>
+            <textarea
+              data-seat={selectedSeat}
+              className="fast-textarea min-h-28"
+              value={latestSeatContent(parsed.seatLines, selectedSeat)}
+              onChange={(event) => setSeatContent(selectedSeat, event.target.value)}
+              placeholder="TAG寄り / 3bet多め など"
+            />
+            {selectedHistory.length > 0 && (
+              <details className="mt-2">
+                <summary className="cursor-pointer text-xs font-bold text-slate-400">過去のプレイヤー ({selectedHistory.length})</summary>
+                <div className="mt-1 space-y-1">
+                  {selectedHistory.map((line, index) => (
+                    <p key={`${line.label}-${index}`} className="text-xs text-slate-400">
+                      <span className="font-black text-slate-500">{line.label}:</span> {line.content || "—"}
+                    </p>
+                  ))}
+                </div>
+              </details>
+            )}
+          </div>
+        )}
+
+        {!selectedSeat && (
+          <p className="rounded-lg border border-dashed border-slate-700 p-4 text-center text-sm text-slate-400">
+            シートをタップしてメモを追記。入力は自動保存されます。
+          </p>
+        )}
+
+        <div className="rounded-lg border border-slate-700 bg-slate-800">
+          <button onClick={() => setShowFreeMemo((current) => !current)} className="flex w-full items-center justify-between px-3 py-2 text-sm font-black text-slate-300">
+            フリーメモ <span className="text-xs text-slate-500">{showFreeMemo ? "閉じる" : freeText ? `${freeText.length}文字` : "開く"}</span>
+          </button>
+          {showFreeMemo && (
+            <div className="px-3 pb-3">
+              <textarea
+                className="fast-textarea min-h-24"
+                value={freeText}
+                onChange={(event) => commit({ seatLines: parsed.seatLines, freeLines: event.target.value.split("\n") })}
+                placeholder="卓全体の雰囲気など"
+              />
+            </div>
+          )}
         </div>
+
+        <div className="rounded-lg border border-slate-700 bg-slate-800">
+          <button onClick={() => setShowRawText((current) => !current)} className="flex w-full items-center justify-between px-3 py-2 text-sm font-black text-slate-300">
+            全文編集 <span className="text-xs text-slate-500">{showRawText ? "閉じる" : "開く"}</span>
+          </button>
+          {showRawText && (
+            <div className="px-3 pb-3">
+              <textarea
+                className="fast-textarea min-h-[40dvh]"
+                value={session.playerNotesText}
+                onChange={(event) => onChange(event.target.value)}
+                placeholder={"1: TAG寄り\n1-2: ルース\n2: 3bet少なめ"}
+              />
+            </div>
+          )}
+        </div>
+
+        <button onClick={onBack} className="tap-btn w-full bg-slate-700">Back</button>
       </section>
     </div>
   );
